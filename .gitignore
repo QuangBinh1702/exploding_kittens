@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Build / typecheck artifacts
+*.tsbuildinfo
+
+# Environment (giữ .env.example trong repo)
+.env
+.env*.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Vercel
+.vercel
+
+# Logs & debug
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test coverage
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# File tạm / merge
+*.orig
+*.rej
+*~
+
+# IDE (tùy chọn — bỏ comment nếu muốn commit cấu hình dùng chung)
+# .idea/
+# .vscode/
+
+# Tạm / nén nguồn asset lớn (không cần version)
+*.7z
+
+# Tooling caches (Next/SWC, ESLint, Turborepo nếu sau này dùng)
+.swc/
+.eslintcache
+.turbo/
+
+# Misc
+*.pem
+.cache/
+
+# npm pack (file .tgz tạm khi thử publish / share)
+*.tgz

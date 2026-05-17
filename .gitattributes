@@ -1,0 +1,12 @@
+# Chuẩn hóa dòng khi clone/push (GitHub + Windows)
+* text=auto eol=lf
+
+# Ảnh / font — luôn binary, tránh Git “sửa” line ending
+*.webp binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
