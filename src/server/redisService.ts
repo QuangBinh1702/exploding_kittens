@@ -82,24 +82,35 @@ export class RedisService {
           await this.deleteRoom(id);
           return undefined;
         }
-        const ownerId = settings.ownerPlayerId ?? game.players[0]?.id;
-        const ownerPlayer = ownerId ? game.players.find((player) => player.id === ownerId) : undefined;
-        if (game.status === "LOBBY" && ownerPlayer && !ownerPlayer.connected) {
+        const connectedPlayers = game.players.filter((player) => player.connected);
+        if (connectedPlayers.length === 0) {
           await this.deleteRoom(id);
           return undefined;
+        }
+        const ownerId = settings.ownerPlayerId ?? game.ownerPlayerId;
+        const ownerPlayer = ownerId ? game.players.find((player) => player.id === ownerId) : undefined;
+        if (!ownerPlayer?.connected) {
+          const nextOwner = connectedPlayers[0];
+          settings.ownerPlayerId = nextOwner.id;
+          settings.updatedAt = Date.now();
+          game.ownerPlayerId = nextOwner.id;
+          game.updatedAt = settings.updatedAt;
+          await this.setRoomSettings(settings);
+          await this.setGame(game);
         }
         return {
           id,
           name: settings.name,
           maxPlayers: settings.maxPlayers,
-          connectedPlayers: game.players.filter((player) => player.connected).length,
+          connectedPlayers: connectedPlayers.length,
           alivePlayers: game.players.filter((player) => player.alive).length,
           drawPileCount: game.drawPile.length,
+          targetDeckSize: settings.targetDeckSize ?? game.targetDeckSize,
           expansions: settings.expansions,
           isPrivate: settings.isPrivate,
           status: game.status,
           updatedAt: game.updatedAt,
-        } satisfies PublicRoomSummary;
+        } as PublicRoomSummary;
       }),
     );
 

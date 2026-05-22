@@ -56,3 +56,27 @@ desktop.ini
 
 # npm pack (file .tgz tạm khi thử publish / share)
 *.tgz
+
+tests/evidence/
+tests/manual-evidence/
+
+scripts/tmp/
+scripts/output/
+
+.playwright-mcp/
+
+# Generated / backup card asset artifacts
+public/assets/cards/_placeholder-backup/
+public/assets/cards/generated-card-sheet-*.png
+public/assets/cards/generated-preview.jpg
+public/assets/cards/generated-*.jpg
+public/assets/cards/generated-*.png
+
+# Local evidence / QA reports not needed at runtime
+public/*evidence*.html
+public/evidence/
+
+# Alternative draft logo assets
+public/assets/logo_option_*.png
+
+.claude

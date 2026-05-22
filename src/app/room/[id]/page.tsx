@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Pusher from "pusher-js";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, Suspense } from "react";
+import { CardDetailModal } from "@/components/CardDetailModal";
 import { CardView } from "@/components/CardView";
 import { DrawPileDeck, type DrawPileAnimMode } from "@/components/DrawPileDeck";
 import { getCardData } from "@/data/cardsData";
@@ -16,6 +17,7 @@ function makePlayerId() {
 function baseCardId(cardInstanceId: string) {
   return cardInstanceId.split("#")[0] ?? cardInstanceId;
 }
+
 
 function TrophyIcon({ className }: { className?: string }) {
   const rawId = useId().replace(/:/g, "");
@@ -46,9 +48,26 @@ function TrophyIcon({ className }: { className?: string }) {
   );
 }
 
+function compactLog(lines: readonly string[]): string[] {
+  const SKIP_PATTERNS = [
+    /Hành động có hiệu lực sau thời gian chờ Nope\.?/i,
+    /^uses Clairvoyance/i,
+    /^Phòng đã tạo với tối đa/i,
+    /^Gỡ Bom: \d+ lá trên tay/i,
+  ];
+  const filtered = lines.filter((line) => !SKIP_PATTERNS.some((re) => re.test(line)));
+  const out: string[] = [];
+  for (const line of filtered) {
+    if (out[out.length - 1] === line) continue;
+    out.push(line);
+  }
+  return out;
+}
+
 function actionDescription(cardId?: string) {
   switch (cardId) {
     case "shuffle":
+    case "shuffle-now":
       return "Sắp xào toàn bộ xấp rút.";
     case "see-the-future-3x":
       return "Sắp hiển thị riêng 3 lá trên cùng cho người đánh.";
@@ -69,10 +88,29 @@ function actionDescription(cardId?: string) {
       return "Sắp đảo chiều lượt chơi.";
     case "attack":
     case "targeted-attack-2x":
+    case "attack-of-the-dead":
       return "Sắp chuyển lượt tấn công.";
     case "skip":
     case "super-skip":
       return "Sắp bỏ lượt.";
+    case "clairvoyance":
+      return "Xem bài trên tay mục tiêu.";
+    case "clone":
+      return "Sao chép lá hành động vừa đánh.";
+    case "dig-deeper":
+      return "Rút sâu hơn trong xấp bài.";
+    case "feed-the-dead":
+    case "grave-robber":
+      return "Tương tác với người chơi đã bị loại.";
+    case "armageddon":
+    case "godcat":
+    case "devilcat":
+    case "raising-heck":
+      return "Hiệu ứng đặc biệt Good vs Evil.";
+    case "potluck":
+      return "Mỗi người đặt một lá lên xấp rút.";
+    case "reveal-the-future-3x":
+      return "Lộ công khai 3 lá trên cùng.";
     default:
       return "Sắp thực hiện chức năng của lá bài.";
   }
@@ -85,7 +123,17 @@ function isNormalCat(cardInstanceId: string) {
 
 function requiresTarget(cardId: string) {
   const type = getCardData(cardId)?.type;
-  return type === "TARGETED_ATTACK" || type === "FAVOR";
+  return (
+    type === "TARGETED_ATTACK" ||
+    type === "FAVOR" ||
+    type === "MARK" ||
+    type === "CURSE_OF_CAT_BUTT" ||
+    type === "BARKING_KITTEN" ||
+    type === "ILL_TAKE_THAT" ||
+    type === "CLAIRVOYANCE" ||
+    type === "ARMAGEDDON" ||
+    type === "DEVILCAT"
+  );
 }
 
 async function postAction(roomId: string, body: unknown) {
@@ -165,6 +213,19 @@ function RoomPageContent() {
   const [deckAnim, setDeckAnim] = useState<DrawPileAnimMode>("idle");
   const lastBottomDrawSig = useRef<string>("");
   const [copiedRoomId, setCopiedRoomId] = useState(false);
+  const [roomPassword, setRoomPassword] = useState("");
+  const [showRoomPassword, setShowRoomPassword] = useState(false);
+  const [copiedRoomPassword, setCopiedRoomPassword] = useState(false);
+  const [dismissedInsightKey, setDismissedInsightKey] = useState("");
+  const [insightDismissAt, setInsightDismissAt] = useState<number | null>(null);
+  const [defuseModalDismissed, setDefuseModalDismissed] = useState(false);
+  const [detailCardId, setDetailCardId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.sessionStorage.getItem(`room-password:${roomId}`) ?? "";
+    setRoomPassword(stored);
+  }, [roomId]);
 
   useEffect(() => {
     const queryId = searchParams.get("playerId");
@@ -196,7 +257,7 @@ function RoomPageContent() {
         }
         setState(next as ClientGameState);
       } catch (actionError) {
-        setError(actionError instanceof Error ? actionError.message : "Không thực hiện được hành động");
+        setError(actionError instanceof Error ? actionError.message : "Action failed");
       } finally {
         setIsBusy(false);
       }
@@ -250,7 +311,7 @@ function RoomPageContent() {
           playerId,
           playerName,
           maxPlayers: 2,
-          expansions: ["BASE", "IMPLODING", "STREAKING", "BARKING"],
+          expansions: ["BASE", "IMPLODING", "STREAKING", "BARKING", "ZOMBIE", "GOOD_VS_EVIL"],
           password: window.sessionStorage.getItem(`room-password:${roomId}`) || undefined,
         });
         if (ignore) return;
@@ -261,7 +322,7 @@ function RoomPageContent() {
         setState(created as ClientGameState);
       })
       .catch((bootError) => {
-        if (!ignore) setError(bootError instanceof Error ? bootError.message : "Không vào được phòng");
+        if (!ignore) setError(bootError instanceof Error ? bootError.message : "Could not join the room");
       });
     return () => {
       ignore = true;
@@ -273,10 +334,38 @@ function RoomPageContent() {
     const poll = window.setInterval(() => {
       getState(roomId, playerId)
         .then(setState)
-        .catch(() => undefined);
+        .catch((pollError) => {
+          const message = pollError instanceof Error ? pollError.message : "";
+          if (/busy|đang xử lý|thử lại/i.test(message)) return;
+        });
     }, 2000);
     return () => window.clearInterval(poll);
   }, [playerId, roomId]);
+
+  useEffect(() => {
+    if (playerId === "p-local") return;
+
+    const handleLeave = () => {
+      const url = `/api/games/${roomId}`;
+      const payload = JSON.stringify({ action: "leave", playerId });
+      if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+        navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
+      } else {
+        fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+          keepalive: true,
+        });
+      }
+    };
+
+    window.addEventListener("beforeunload", handleLeave);
+    return () => {
+      window.removeEventListener("beforeunload", handleLeave);
+      handleLeave();
+    };
+  }, [roomId, playerId]);
 
   useEffect(() => {
     const key = process.env.NEXT_PUBLIC_PUSHER_KEY;
@@ -286,7 +375,10 @@ function RoomPageContent() {
     const pusher = new Pusher(key, { cluster });
     const channel = pusher.subscribe(`game-${roomId}`);
     channel.bind("gameState:update", () => {
-      getState(roomId, playerId).then(setState).catch(() => undefined);
+      getState(roomId, playerId).then(setState).catch((stateError) => {
+        const message = stateError instanceof Error ? stateError.message : "";
+        if (/busy|đang xử lý|thử lại/i.test(message)) return;
+      });
     });
     return () => {
       channel.unbind_all();
@@ -322,10 +414,18 @@ function RoomPageContent() {
   const isPlaying = hasGameState && state.status === "PLAYING";
   const isFinished = hasGameState && state.status === "FINISHED";
   const isMyTurn = isPlaying && state?.currentPlayerId === playerId;
+  const recentExplosion = state?.lastExplosion && now - state.lastExplosion.at < 4500 ? state.lastExplosion : undefined;
   const turnSeconds = isPlaying && state ? Math.max(0, Math.ceil((state.turnExpiresAt - now) / 1000)) : 0;
   const nopeSeconds = state?.pendingAction
     ? Math.max(0, Math.ceil((state.pendingAction.expiresAt - now) / 1000))
     : 0;
+  const insightKey = state?.insight
+    ? `${state.insight.playerId}:${state.insight.title}:${state.insight.expiresAt}:${state.updatedAt}`
+    : "";
+  const visibleInsight = state?.insight && insightKey !== dismissedInsightKey && (!insightDismissAt || now < insightDismissAt)
+    ? state.insight
+    : undefined;
+  const insightSeconds = visibleInsight ? Math.max(0, Math.ceil(((insightDismissAt ?? visibleInsight.expiresAt) - now) / 1000)) : 0;
 
   const mustConfirmAlter = Boolean(state?.pendingDrawAlter);
   const mustConfirmShare = Boolean(state?.pendingShareFuture?.reorderDrawTop?.length);
@@ -341,6 +441,23 @@ function RoomPageContent() {
     mustShuffle ||
     mustDefuse ||
     mustPickCatSteal;
+
+  useEffect(() => {
+    if (state?.pendingDefuseExplosion) {
+      setDefuseModalDismissed(false);
+    }
+  }, [state?.pendingDefuseExplosion]);
+
+  useEffect(() => {
+    if (state?.insight) setInsightDismissAt(Math.min(state.insight.expiresAt, Date.now() + 10000));
+    else setInsightDismissAt(null);
+  }, [insightKey, state?.insight]);
+
+  useEffect(() => {
+    if (!visibleInsight || mustConfirmAlter || mustConfirmShare || mustBury || mustShuffle || mustDefuse || mustPickCatSteal) return;
+    if (insightSeconds > 0) return;
+    setDismissedInsightKey(insightKey);
+  }, [insightKey, insightSeconds, mustBury, mustConfirmAlter, mustConfirmShare, mustDefuse, mustPickCatSteal, mustShuffle, visibleInsight]);
 
   useEffect(() => {
     if (state?.insight?.reorderDrawTop?.length && state.pendingDrawAlter) {
@@ -396,7 +513,10 @@ function RoomPageContent() {
     if (state.pendingAction && nopeSeconds <= 0) {
       runAction({ action: "resolve", playerId });
     } else if (!state.pendingAction && turnSeconds <= 0) {
-      getState(roomId, playerId).then(setState).catch(() => undefined);
+      getState(roomId, playerId).then(setState).catch((stateError) => {
+        const message = stateError instanceof Error ? stateError.message : "";
+        if (/busy|đang xử lý|thử lại/i.test(message)) return;
+      });
     }
   }, [isBusy, isPlaying, nopeSeconds, playerId, roomId, runAction, state, turnSeconds]);
 
@@ -513,8 +633,19 @@ function RoomPageContent() {
     }
   }
 
+  async function copyRoomPassword() {
+    if (!roomPassword) return;
+    try {
+      await navigator.clipboard.writeText(roomPassword);
+      setCopiedRoomPassword(true);
+      window.setTimeout(() => setCopiedRoomPassword(false), 2000);
+    } catch {
+      setError("Không sao chép được mật khẩu.");
+    }
+  }
+
   return (
-    <main className="relative z-10 h-screen overflow-hidden bg-gradient-to-b from-parchment via-cream to-amber-100/35 px-3 py-3 text-ink">
+    <main className="relative z-10 min-h-screen overflow-x-hidden bg-gradient-to-b from-parchment via-cream to-amber-100/35 px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 text-ink sm:px-3 sm:py-3 lg:min-h-screen lg:overflow-y-auto">
       {booting && (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 bg-white/80 px-6 backdrop-blur-[2px]">
           <div className="w-full max-w-sm animate-pulse space-y-3 rounded-2xl border-2 border-felt/90 bg-white p-6 shadow-card">
@@ -525,83 +656,109 @@ function RoomPageContent() {
           <p className="text-sm font-bold text-ink/70">Đang vào phòng…</p>
         </div>
       )}
-      <section className="mx-auto grid h-full max-w-7xl grid-rows-[auto_1fr_auto] gap-2">
-        <header className="grid gap-3 rounded-2xl border-2 border-felt/90 bg-white/90 p-3 shadow-lift backdrop-blur-sm sm:grid-cols-[1fr_auto]">
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-[11px] font-black uppercase tracking-[0.16em] text-cherry">Phòng</p>
-              <span className="rounded-lg bg-felt px-2.5 py-1 font-mono text-sm font-black tracking-wider text-parchment shadow-inner">
-                {roomId}
-              </span>
-              <button
-                type="button"
-                onClick={() => void copyRoomId()}
-                className="rounded-lg border-2 border-felt/90 bg-parchment px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-ink shadow-sm transition hover:bg-cream"
-              >
-                {copiedRoomId ? "Đã chép" : "Sao chép ID"}
-              </button>
-            </div>
-            {state?.roomName && (
-              <p className="mt-0.5 text-xs font-bold text-stone-600">
-                Tên phòng: <span className="font-black text-ink">{state.roomName}</span>
-              </p>
-            )}
-            <h1 className="font-display text-xl font-semibold tracking-tight text-ink sm:text-2xl">
-              {!hasGameState
-                ? "Đang tải…"
-                : isFinished
-                  ? "Ván đã kết thúc"
-                  : isLobby
-                    ? "Đang chờ bắt đầu"
-                    : isMyTurn
-                      ? "Đến lượt: Bạn"
-                      : `Đến lượt: ${currentPlayer?.name ?? "…"}`}
-            </h1>
-            <p className="text-xs font-bold text-stone-700">
-              <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="rounded-lg bg-felt px-2.5 py-1 font-black text-parchment">
-                  Bạn: {me?.name ?? playerName}
+      <section className="mx-auto grid max-w-7xl gap-2 lg:h-full lg:grid-rows-[auto_1fr_auto]">
+        <header className="sticky top-2 z-30 grid gap-2 rounded-2xl border-2 border-felt/90 bg-white/95 p-2.5 shadow-lift backdrop-blur-md sm:grid-cols-[1fr_auto] sm:p-3 lg:static lg:z-auto">
+          <div className="flex items-start gap-3">
+            <img src="/assets/logo.png" alt="Mèo Nổ Logo" className="h-12 w-12 object-contain shrink-0 mt-0.5 drop-shadow-[0_2px_4px_rgba(0,0,0,0.15)]" />
+            <div className="flex-1 min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-[11px] font-black uppercase tracking-[0.16em] text-cherry">Phòng</p>
+                <span className="rounded-lg bg-felt px-2.5 py-1 font-mono text-sm font-black tracking-wider text-parchment shadow-inner">
+                  {roomId}
                 </span>
-                {isPlaying && me && (
-                  <span className={isMyTurn ? "font-black text-emerald-800" : "text-stone-600"}>
-                    {isMyTurn ? "● Đang tới lượt bạn" : "○ Chờ lượt của bạn"}
+                <button
+                  type="button"
+                  onClick={() => void copyRoomId()}
+                  className="rounded-lg border-2 border-felt/90 bg-parchment px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-ink shadow-sm transition hover:bg-cream"
+                >
+                  {copiedRoomId ? "Đã chép" : "Sao chép ID"}
+                </button>
+                {roomPassword && (
+                  <span className="inline-flex items-center gap-1 rounded-lg border-2 border-amber-700/80 bg-amber-50 px-2 py-1 text-[10px] font-black uppercase tracking-[0.12em] text-amber-900 shadow-sm">
+                    <span aria-hidden>🔒</span>
+                    <span>MK:</span>
+                    <span className="rounded bg-white px-1.5 py-0.5 font-mono text-[11px] tracking-wider">
+                      {showRoomPassword ? roomPassword : "•".repeat(Math.max(roomPassword.length, 4))}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowRoomPassword((v) => !v)}
+                      className="rounded bg-amber-200 px-1.5 py-0.5 text-[9px] font-black hover:bg-amber-300"
+                    >
+                      {showRoomPassword ? "Ẩn" : "Hiện"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void copyRoomPassword()}
+                      className="rounded bg-amber-700 px-1.5 py-0.5 text-[9px] font-black text-white hover:bg-amber-800"
+                    >
+                      {copiedRoomPassword ? "Đã chép" : "Sao chép"}
+                    </button>
                   </span>
                 )}
-              </span>
-              <span className="mt-1 block">
-              {!hasGameState
-                ? "Đang đồng bộ với máy chủ…"
-                : isFinished
-                  ? "Ván kết thúc — xem người thắng ở khung giữa (biểu tượng cúp). Bấm «Ván mới» trên thanh trên để chơi lại."
-                  : isLobby
-                ? isRoomOwner
-                  ? "Chờ đủ người rồi bấm Bắt đầu (chỉ chủ phòng bấm được)"
-                  : "Chờ chủ phòng bắt đầu ván"
-                : waitCatStealVictim && state?.pendingCatSteal?.type === "wait_pick"
-                  ? `${state.pendingCatSteal.stealerName} đang chọn một lá từ tay bạn (combo 2 mèo).`
-                  : mustPickCatSteal && state?.pendingCatSteal?.type === "pick"
-                    ? `Chọn đúng 1 lá từ tay ${state.pendingCatSteal.targetName} — bấm vào lá bài ở khung dưới.`
-                : mustDefuse
-                  ? "Rút trúng Mèo Nổ! Chọn vị trí chôn lại lá Mèo Nổ (0 = đáy xấp) rồi xác nhận — Gỡ Bom sẽ được dùng tự động."
-                  : mustBury
-                    ? "Chôn bài: nhập vị trí chèn (0…số lá trong xấp), rồi xác nhận."
-                    : mustShuffle
-                      ? "Bấm nút trộn để xào ngẫu nhiên xấp rút."
-                      : mustConfirmShare
-                        ? "Chia Sẻ Tương Lai: sắp xếp các lá, xác nhận — người kế tiếp cũng sắp được trước khi trả lá lên xấp."
-                        : mustConfirmAlter
-                          ? "Sắp xếp xong các lá trên xấp rút rồi bấm Xác nhận — sau đó bạn vẫn có thể đánh tiếp hoặc rút bài để kết thúc lượt"
-                          : isMyTurn
-                            ? "Đến lượt bạn: đánh bài tùy ý; chỉ khi không đánh nữa thì bấm xấp rút để rút 1 lá và kết thúc lượt"
-                            : "Đang chờ người chơi khác"}
-              </span>
-            </p>
+              </div>
+              {state?.roomName && (
+                <p className="mt-0.5 hidden text-xs font-bold text-stone-600 sm:block">
+                  Tên phòng: <span className="font-black text-ink">{state.roomName}</span>
+                </p>
+              )}
+              <h1 className="font-display text-lg font-semibold tracking-tight text-ink sm:text-2xl">
+                {!hasGameState
+                  ? "Đang tải…"
+                  : isFinished
+                    ? "Ván đã kết thúc"
+                    : isLobby
+                      ? "Đang chờ bắt đầu"
+                      : isMyTurn
+                        ? "Đến lượt: Bạn"
+                        : `Đến lượt: ${currentPlayer?.name ?? "…"}`}
+              </h1>
+              <p className="text-[11px] font-bold leading-snug text-stone-700 sm:text-xs">
+                <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="rounded-lg bg-felt px-2.5 py-1 font-black text-parchment">
+                    Bạn: {me?.name ?? playerName}
+                  </span>
+                  {isPlaying && me && (
+                    <span className={isMyTurn ? "font-black text-emerald-800" : "text-stone-600"}>
+                      {isMyTurn ? "● Đang tới lượt bạn" : "○ Chờ lượt của bạn"}
+                    </span>
+                  )}
+                </span>
+                <span className="mt-1 line-clamp-2 sm:block sm:line-clamp-none">
+                  {!hasGameState
+                    ? "Đang đồng bộ với máy chủ…"
+                    : isFinished
+                      ? "Ván kết thúc — xem người thắng ở khung giữa (biểu tượng cúp). Bấm «Ván mới» trên thanh trên để chơi lại."
+                      : isLobby
+                        ? isRoomOwner
+                          ? "Chờ đủ người rồi bấm Bắt đầu (chỉ chủ phòng bấm được)"
+                          : "Chờ chủ phòng bắt đầu ván"
+                        : waitCatStealVictim && state?.pendingCatSteal?.type === "wait_pick"
+                          ? `${state.pendingCatSteal.stealerName} đang chọn một lá từ tay bạn (combo 2 mèo).`
+                          : mustPickCatSteal && state?.pendingCatSteal?.type === "pick"
+                            ? `Chọn đúng 1 lá từ tay ${state.pendingCatSteal.targetName} — bấm vào lá bài ở khung dưới.`
+                            : mustDefuse
+                              ? "Rút trúng Mèo Nổ! Chọn vị trí chôn lại lá Mèo Nổ rồi xác nhận."
+                              : mustBury
+                                ? "Chôn bài: nhập vị trí chèn rồi xác nhận."
+                                : mustShuffle
+                                  ? "Bấm nút trộn để xào ngẫu nhiên xấp rút."
+                                  : mustConfirmShare
+                                    ? "Chia Sẻ Tương Lai: sắp xếp các lá rồi xác nhận."
+                                    : mustConfirmAlter
+                                      ? "Sắp xếp xong các lá rồi bấm Xác nhận."
+                                      : isMyTurn
+                                        ? "Đến lượt bạn: đánh bài hoặc rút để kết thúc lượt."
+                                        : "Đang chờ người chơi khác"}
+                </span>
+              </p>
+            </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
             {isPlaying && (
-              <div className="rounded-md bg-felt px-3 py-1.5 text-center text-white">
+              <div className="rounded-md bg-felt px-2.5 py-1 text-center text-white sm:px-3 sm:py-1.5">
                 <p className="text-[9px] font-black uppercase tracking-[0.12em]">Lượt</p>
-                <p className="text-xl font-black">{turnSeconds}s</p>
+                <p className="text-lg font-black sm:text-xl">{turnSeconds}s</p>
               </div>
             )}
             {isPlaying && (
@@ -610,7 +767,7 @@ function RoomPageContent() {
                 <select
                   value={targetPlayerId}
                   onChange={(event) => setTargetPlayerId(event.target.value)}
-                  className="h-9 min-w-[140px] rounded-md border-2 border-felt/90 bg-white px-2 text-xs font-bold normal-case"
+                  className="h-9 min-w-[118px] rounded-md border-2 border-felt/90 bg-white px-2 text-xs font-bold normal-case sm:min-w-[140px]"
                 >
                   {aliveTargets.map((player) => (
                     <option key={player.id} value={player.id}>
@@ -628,19 +785,25 @@ function RoomPageContent() {
                   playerId,
                   playerName,
                   maxPlayers: 2,
-                  expansions: ["BASE", "IMPLODING", "STREAKING", "BARKING"],
+                  expansions: ["BASE", "IMPLODING", "STREAKING", "BARKING", "ZOMBIE", "GOOD_VS_EVIL"],
                   forceNew: true,
                 })
               }
-              className="h-9 rounded-md bg-white px-3 text-xs font-black shadow transition hover:-translate-y-0.5 disabled:opacity-50"
+              className="h-9 rounded-md bg-white px-2.5 text-[11px] font-black shadow transition hover:-translate-y-0.5 disabled:opacity-50 sm:px-3 sm:text-xs"
             >
               Ván mới
+            </button>
+            <button
+              onClick={() => router.push("/")}
+              className="h-9 rounded-md bg-stone-100 hover:bg-stone-200 border border-stone-300 px-2.5 text-[11px] font-black shadow transition hover:-translate-y-0.5 sm:px-3 sm:text-xs text-ink"
+            >
+              Thoát
             </button>
             {isLobby ? (
               <button
                 disabled={isBusy || connectedPlayers.length < 2 || !isRoomOwner}
                 onClick={() => runAction({ action: "start", playerId })}
-                className="h-9 rounded-md bg-cherry px-3 text-xs font-black uppercase tracking-[0.12em] text-white shadow transition hover:-translate-y-0.5 disabled:opacity-50"
+                className="h-9 rounded-md bg-cherry px-2.5 text-[11px] font-black uppercase tracking-[0.12em] text-white shadow transition hover:-translate-y-0.5 disabled:opacity-50 sm:px-3 sm:text-xs"
               >
                 Bắt đầu
               </button>
@@ -648,7 +811,7 @@ function RoomPageContent() {
               <button
                 disabled={isBusy || !isMyTurn || !!state?.actionPrompt || blockTableActions}
                 onClick={handleDeckDraw}
-                className="h-9 rounded-md bg-cherry px-3 text-xs font-black text-white shadow transition hover:-translate-y-0.5 disabled:opacity-50"
+                className="h-9 rounded-md bg-cherry px-2.5 text-[11px] font-black text-white shadow transition hover:-translate-y-0.5 disabled:opacity-50 sm:px-3 sm:text-xs"
               >
                 Rút bài
               </button>
@@ -664,14 +827,14 @@ function RoomPageContent() {
                 : null}
             </div>
           )}
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="flex gap-2 overflow-x-auto pb-1 sm:grid sm:grid-cols-2 sm:overflow-visible sm:pb-0">
             {boardPlayers.map((player) => {
               const isSelf = player.id === playerId;
               const isTurn = isPlaying && state?.currentPlayerId === player.id;
               return (
                 <div
                   key={player.id}
-                  className={`rounded-lg border-2 p-2 shadow ${
+                  className={`min-w-[148px] rounded-xl border-2 p-2 shadow sm:min-w-0 ${
                     isTurn
                       ? "border-emerald-600 bg-emerald-50 ring-2 ring-emerald-600"
                       : isSelf
@@ -686,6 +849,16 @@ function RoomPageContent() {
                         <span className="shrink-0 rounded bg-emerald-800 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-white">
                           Bạn
                         </span>
+                      )}
+                      {!player.alive && (
+                        <motion.span
+                          initial={{ scale: 0.6, rotate: -8 }}
+                          animate={{ scale: [1, 1.18, 1], rotate: [0, -4, 4, 0] }}
+                          transition={{ duration: 0.7, repeat: 3 }}
+                          className="shrink-0 rounded-full bg-cherry px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.12em] text-white shadow"
+                        >
+                          BOOM
+                        </motion.span>
                       )}
                     </div>
                     {isPlaying && (
@@ -721,7 +894,7 @@ function RoomPageContent() {
               );
             })}
             {emptySlotCount > 0 && (
-              <div className="rounded-lg border-2 border-dashed border-stone-500 bg-white/50 p-2 text-sm font-black text-stone-600">
+              <div className="min-w-[148px] rounded-xl border-2 border-dashed border-stone-500 bg-white/50 p-2 text-sm font-black text-stone-600 sm:min-w-0">
                 Còn {emptySlotCount} chỗ trống
               </div>
             )}
@@ -755,7 +928,7 @@ function RoomPageContent() {
                   Nhật ký phòng
                 </p>
                 <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-left text-xs font-semibold text-stone-700">
-                  {(state?.log ?? []).map((line, index) => (
+                  {compactLog(state?.log ?? []).map((line, index) => (
                     <p key={`${index}-${line.slice(0, 24)}`} className="border-b border-stone-100 py-1 last:border-b-0">
                       {line}
                     </p>
@@ -789,23 +962,23 @@ function RoomPageContent() {
               </div>
             </div>
           ) : (
-            <div className="grid min-h-0 grid-cols-[1fr_minmax(190px,250px)] items-start gap-3 pb-40">
-              <div className="relative z-20 grid min-h-0 place-items-start justify-self-center">
-                <div className="grid w-full max-w-xl grid-cols-2 gap-4 self-start [min-height:280px] content-start items-start">
-                  <div className="relative z-20 flex justify-center pt-1">
+            <div className="grid min-h-0 grid-cols-1 items-start gap-2 pb-28 sm:gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(190px,250px)] lg:pb-32">
+              <div className="relative z-10 flex w-full justify-center overflow-visible px-2 py-3 sm:px-4 sm:py-5">
+                <div className="grid w-full max-w-2xl grid-cols-2 items-start gap-4 overflow-visible sm:gap-8">
+                  <div className="relative z-10 flex min-h-[260px] justify-center overflow-visible pt-1 sm:min-h-[330px] sm:pt-2">
                     <DrawPileDeck
                       count={state?.drawPileCount ?? 0}
                       disabled={isBusy || !isMyTurn || !!state?.actionPrompt || blockTableActions}
                       onDraw={handleDeckDraw}
                       dangerPulse={mustDefuse}
-                      shuffleWiggle={Boolean(state?.insight?.title?.toLowerCase().includes("xào"))}
+                      shuffleWiggle={Boolean(visibleInsight?.title?.toLowerCase().includes("xào"))}
                       animMode={deckAnim}
                     />
                   </div>
 
-                  <div className="aspect-[5/7] w-full max-w-[200px] justify-self-end rounded-2xl border-[3px] border-dashed border-felt/50 bg-cream/80 p-2 shadow-lift backdrop-blur-sm">
+                  <div className="aspect-[5/7] w-full max-w-[132px] justify-self-center rounded-2xl border-[3px] border-dashed border-felt/50 bg-cream/80 p-1.5 shadow-lift backdrop-blur-sm sm:max-w-[200px] sm:justify-self-end sm:p-2">
                     {state?.discardTop ? (
-                      <CardView cardId={state.discardTop} density="compact" className="shadow-none" />
+                      <CardView cardId={state.discardTop} density="compact" className="w-full h-full shadow-none" onClick={() => setDetailCardId(state.discardTop ?? null)} />
                     ) : (
                       <div className="flex h-full items-center justify-center text-center text-xs font-black uppercase tracking-[0.16em] text-stone-500">
                         Xấp bỏ
@@ -815,29 +988,49 @@ function RoomPageContent() {
                 </div>
               </div>
 
-              <aside className="grid gap-2 rounded-2xl border-2 border-felt/90 bg-white/88 p-4 shadow-lift backdrop-blur-sm">
+              <aside className="grid gap-2 rounded-2xl border-2 border-felt/90 bg-white/88 p-3 shadow-lift backdrop-blur-sm sm:p-4">
                 <p className="text-[11px] font-black uppercase tracking-[0.14em] text-stone-600">Hành động</p>
                 {pendingCard ? (
-                  <>
-                    <CardView cardId={pendingCard.id} density="mini" className="shadow-none" />
-                    <p className="text-sm font-black">{pendingCard.title}</p>
-                    <p className="text-xs font-bold text-stone-700">{actionDescription(pendingCard.id)}</p>
-                    <div className="rounded-md bg-yellow-200 px-3 py-2 text-center">
-                      <p className="text-[10px] font-black uppercase tracking-[0.12em]">Chờ Nope</p>
-                      <p className="text-3xl font-black text-cherry">{nopeSeconds}s</p>
+                  <div className="grid gap-2 rounded-xl border-2 border-cherry/50 bg-amber-50 p-3 shadow-inner">
+                    <div className="flex items-center gap-3">
+                      <div className="w-20 shrink-0">
+                        <CardView cardId={pendingCard.id} density="mini" className="shadow-none" onClick={() => setDetailCardId(pendingCard.id)} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-black">{pendingCard.title}</p>
+                        <p className="line-clamp-3 text-[11px] font-semibold text-stone-700">{actionDescription(pendingCard.id)}</p>
+                      </div>
                     </div>
-                    <button
-                      disabled={!nopeCard || isBusy}
-                      onClick={() => runAction({ action: "nope", playerId, cardInstanceId: nopeCard })}
-                      className="h-9 rounded-md bg-felt px-3 text-xs font-black uppercase tracking-[0.12em] text-white disabled:opacity-50"
-                    >
-                      Dùng Nope
-                    </button>
-                  </>
-                ) : state?.insight ? (
+                    <div className="flex items-center justify-between gap-3 rounded-lg bg-yellow-200 px-3 py-2">
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-[0.12em]">Chờ Nope</p>
+                        <p className="text-3xl font-black leading-none text-cherry">{nopeSeconds}s</p>
+                      </div>
+                      <motion.button
+                        disabled={!nopeCard || isBusy}
+                        onClick={() => runAction({ action: "nope", playerId, cardInstanceId: nopeCard })}
+                        whileTap={{ scale: 0.95 }}
+                        className="h-12 rounded-xl bg-cherry px-5 text-sm font-black uppercase tracking-[0.14em] text-white shadow-lift disabled:opacity-40"
+                      >
+                        🚫 Dùng Nope
+                      </motion.button>
+                    </div>
+                    {!nopeCard && (
+                      <p className="text-[10px] font-bold text-stone-600">Bạn không có lá Nope trên tay.</p>
+                    )}
+                  </div>
+                ) : visibleInsight ? (
                   <>
-                    <p className="text-sm font-black">{state.insight.title}</p>
-                    {state.insight.message && <p className="text-xs font-bold text-stone-700">{state.insight.message}</p>}
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-black">{visibleInsight.title}</p>
+                      <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-black text-amber-900">
+                        {insightSeconds}s
+                      </span>
+                    </div>
+                    {visibleInsight.message && <p className="text-xs font-bold text-stone-700">{visibleInsight.message}</p>}
+                    {visibleInsight.cards.length > 0 && (
+                      <p className="text-[10px] font-bold text-stone-500">Bấm “Đóng” ở popup nếu không muốn xem nữa.</p>
+                    )}
                   </>
                 ) : (
                   <p className="text-xs font-bold text-stone-600">
@@ -849,48 +1042,122 @@ function RoomPageContent() {
           )}
 
           <AnimatePresence>
+            {recentExplosion?.eliminated && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.85 }}
+                animate={{ opacity: 1, scale: [1, 1.06, 1] }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="fixed inset-0 z-[60] grid place-items-center bg-cherry/25 px-4 backdrop-blur-[1px]"
+              >
+                <div className="max-w-sm rounded-3xl border-4 border-cherry bg-parchment p-6 text-center shadow-card">
+                  <p className="text-5xl font-black text-cherry">BOOM!</p>
+                  <p className="mt-3 text-lg font-black text-ink">{recentExplosion.playerName} đã bị loại</p>
+                  <p className="mt-2 text-sm font-bold text-stone-700">Người chơi không còn Gỡ Bom/Zombie Kitten nên Mèo Nổ phát nổ.</p>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
             {isPlaying &&
-              (mustDefuse ||
+              ((mustDefuse && !defuseModalDismissed) ||
                 mustPickCatSteal ||
                 mustBury ||
                 mustShuffle ||
                 mustConfirmShare ||
                 (mustConfirmAlter && alterOrder.length > 0) ||
-                (state?.insight && state.insight.cards.length > 0)) && (
+                (visibleInsight && visibleInsight.cards.length > 0)) && (
               <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 20 }}
-                className="pointer-events-auto absolute bottom-2 left-1/2 z-20 w-[min(92vw,620px)] max-h-[min(70vh,520px)] -translate-x-1/2 overflow-y-auto rounded-2xl border-4 border-felt/90 bg-parchment p-4 shadow-card"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-50 grid place-items-center bg-ink/35 px-3 py-4 backdrop-blur-[2px]"
               >
+                <motion.div
+                  initial={{ opacity: 0, y: 24, scale: 0.97 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 24, scale: 0.97 }}
+                  className="pointer-events-auto w-[min(94vw,760px)] max-h-[min(82vh,620px)] overflow-y-auto rounded-2xl border-4 border-felt/90 bg-parchment p-4 shadow-card"
+                >
+                {visibleInsight && !mustConfirmAlter && !mustConfirmShare && !mustBury && !mustShuffle && !mustDefuse && !mustPickCatSteal && (
+                  <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border-2 border-amber-300 bg-amber-50 px-3 py-2">
+                    <p className="text-xs font-black uppercase tracking-[0.14em] text-amber-900">
+                      Tự đóng sau {insightSeconds}s
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setDismissedInsightKey(insightKey)}
+                      className="h-9 rounded-lg bg-felt px-4 text-xs font-black uppercase tracking-[0.12em] text-parchment shadow"
+                    >
+                      Đóng
+                    </button>
+                  </div>
+                )}
                 {mustPickCatSteal && state?.pendingCatSteal?.type === "pick" ? (
                   <>
                     <p className="text-center text-xs font-black uppercase tracking-[0.16em] text-amber-900">Combo 2 mèo</p>
                     <p className="mt-1 text-center text-sm font-bold text-stone-800">
                       Chọn <span className="text-cherry">đúng 1 lá</span> từ tay{" "}
                       <span className="font-black">{state.pendingCatSteal.targetName}</span>
+                      <span className="ml-1 text-[11px] font-bold text-stone-600">— bài đối phương đang úp, bạn không nhìn thấy mặt bài.</span>
                     </p>
                     <div className="mt-3 flex flex-wrap justify-center gap-3">
-                      {state.pendingCatSteal.cards.map((c) => (
+                      {state.pendingCatSteal.cards.map((c, idx) => (
                         <button
                           key={c.instanceId}
                           type="button"
                           disabled={isBusy}
                           onClick={() => confirmCatStealPick(c.instanceId)}
-                          className="rounded-lg border-2 border-felt/90 bg-amber-50/80 p-1 shadow transition hover:-translate-y-1 hover:ring-2 hover:ring-amber-500 disabled:opacity-50"
+                          className="rounded-lg border-2 border-amber-700 bg-emerald-900 p-1 shadow transition hover:-translate-y-1 hover:ring-2 hover:ring-amber-500 disabled:opacity-50"
                         >
-                          <CardView cardId={c.baseId} density="mini" className="w-[104px] shrink-0 shadow-none sm:w-28" />
+                          <div className="relative w-[88px] sm:w-24">
+                            <CardView cardId="exploding-kitten" density="mini" faceDown className="shadow-none" />
+                            <span className="pointer-events-none absolute inset-x-0 bottom-1 mx-auto w-fit rounded-full bg-amber-200 px-2 py-0.5 text-[9px] font-black text-amber-950">
+                              #{idx + 1}
+                            </span>
+                          </div>
                         </button>
                       ))}
                     </div>
                   </>
+                ) : waitCatStealVictim && state?.pendingCatSteal?.type === "wait_pick" ? (
+                  <>
+                    <p className="text-center text-xs font-black uppercase tracking-[0.16em] text-amber-900">Đối phương đang chọn bài</p>
+                    <p className="mt-1 text-center text-sm font-bold text-stone-800">
+                      <span className="font-black">{state.pendingCatSteal.stealerName}</span> sắp lấy 1 lá ngẫu nhiên từ tay bạn ({state.pendingCatSteal.cardCount} lá).
+                    </p>
+                    <p className="mt-1 text-center text-[11px] font-semibold text-stone-600">
+                      Bạn có thể bấm nút bên dưới để xáo lại tay bài, làm khó người chọn.
+                    </p>
+                    <div className="mt-3 flex justify-center">
+                      <button
+                        type="button"
+                        disabled={isBusy || (me?.handCount ?? 0) <= 1}
+                        onClick={() => runAction({ action: "shuffleMyHand", playerId })}
+                        className="rounded-md bg-emerald-700 px-5 py-2 text-xs font-black uppercase tracking-[0.12em] text-white shadow disabled:opacity-50"
+                      >
+                        🔀 Xáo bài trên tay
+                      </button>
+                    </div>
+                  </>
                 ) : mustDefuse ? (
                   <>
-                    <p className="text-center text-xs font-black uppercase tracking-[0.16em] text-cherry">
-                      Mèo Nổ!
-                    </p>
+                    <div className="flex justify-between items-center border-b border-stone-200 pb-2 mb-3">
+                      <p className="text-xs font-black uppercase tracking-[0.16em] text-cherry">
+                        Mèo Nổ!
+                      </p>
+                      {(state?.players.filter(p => p.alive).length ?? 0) >= 2 && (
+                        <button
+                          type="button"
+                          onClick={() => setDefuseModalDismissed(true)}
+                          className="rounded bg-stone-200 hover:bg-stone-300 px-2 py-1 text-[10px] font-black text-stone-700"
+                        >
+                          Ẩn giao diện
+                        </button>
+                      )}
+                    </div>
                     <div className="mt-2 flex justify-center">
-                      <CardView cardId="exploding-kitten" density="compact" className="max-w-[200px] shadow-lg ring-4 ring-cherry" />
+                      <CardView cardId="exploding-kitten" density="compact" className="max-w-[200px] shadow-lg ring-4 ring-cherry" onClick={() => setDetailCardId("exploding-kitten")} />
                     </div>
                     <p className="mt-2 text-center text-sm font-bold text-stone-800">
                       Chọn vị trí chèn Mèo Nổ vào xấp rút (0 = đáy, {state.pendingDefuseExplosion?.maxInsertIndex ?? 0} = trên cùng).
@@ -931,6 +1198,7 @@ function RoomPageContent() {
                         cardId={state.pendingBury?.cardBaseId ?? "shuffle"}
                         density="compact"
                         className="max-w-[200px] shadow-none"
+                        onClick={() => setDetailCardId(state.pendingBury?.cardBaseId ?? "shuffle")}
                       />
                     </div>
                     <p className="mt-2 text-xs font-bold text-stone-700">
@@ -964,8 +1232,14 @@ function RoomPageContent() {
                     </div>
                   </>
                 ) : mustShuffle ? (
-                  <div className="grid place-items-center gap-4 py-6">
-                    <p className="text-center text-sm font-black text-ink">Xào bài — trộn ngẫu nhiên cả xấp rút</p>
+                  <div className="grid place-items-center gap-4 py-4">
+                    <p className="text-center text-xs font-black uppercase tracking-[0.16em] text-fuchsia-900">Xào Bài</p>
+                    <div className="w-24">
+                      <CardView cardId="shuffle" density="mini" className="shadow-none" onClick={() => setDetailCardId("shuffle")} />
+                    </div>
+                    <p className="text-center text-sm font-bold text-stone-800">
+                      Bấm nút bên dưới để trộn ngẫu nhiên toàn bộ xấp rút.
+                    </p>
                     <motion.button
                       type="button"
                       initial={false}
@@ -976,7 +1250,7 @@ function RoomPageContent() {
                       transition={{ duration: 1.2, repeat: Infinity }}
                       className="rounded-full border-4 border-amber-400 bg-gradient-to-br from-amber-300 via-orange-500 to-cherry px-10 py-6 text-lg font-black uppercase tracking-[0.15em] text-white shadow-xl"
                     >
-                      Trộn ngay
+                      🔀 Trộn ngay
                     </motion.button>
                   </div>
                 ) : mustConfirmShare && shareOrder.length > 0 ? (
@@ -1035,10 +1309,10 @@ function RoomPageContent() {
                       Xác nhận
                     </button>
                   </>
-                ) : state?.insight ? (
+                ) : visibleInsight ? (
                   <>
-                    <p className="text-xs font-black uppercase tracking-[0.16em] text-cherry">{state.insight.title}</p>
-                    {state.insight.message && <p className="text-xs font-bold text-stone-600">{state.insight.message}</p>}
+                    <p className="text-xs font-black uppercase tracking-[0.16em] text-cherry">{visibleInsight.title}</p>
+                    {visibleInsight.message && <p className="text-xs font-bold text-stone-600">{visibleInsight.message}</p>}
                     {mustConfirmAlter && alterOrder.length > 0 ? (
                       <>
                         <p className="mt-2 text-[11px] font-bold text-sky-900">
@@ -1095,50 +1369,70 @@ function RoomPageContent() {
                         </button>
                       </>
                     ) : (
-                      <div className="mt-2 flex gap-2 overflow-x-auto">
-                        {state.insight.cards.map((cardId, index) => (
-                          <CardView
-                            key={`${cardId}-${index}`}
-                            cardId={cardId}
-                            density="mini"
-                            className="w-28 shrink-0 shadow-none"
-                          />
+                      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+                        {visibleInsight.cards.map((cardId, index) => (
+                          <div key={`${cardId}-${index}`} className="rounded-xl border-2 border-cherry/70 bg-white p-2 shadow-lift">
+                            <p className="mb-1 text-center text-[10px] font-black uppercase tracking-[0.12em] text-stone-500">
+                              Lá {index + 1}
+                            </p>
+                            <CardView
+                              cardId={cardId}
+                              density="mini"
+                              className="mx-auto w-28 shrink-0 shadow-none"
+                              onClick={() => setDetailCardId(cardId)}
+                            />
+                          </div>
                         ))}
                       </div>
                     )}
                   </>
                 ) : null}
+                </motion.div>
               </motion.div>
             )}
           </AnimatePresence>
+
+          {mustDefuse && defuseModalDismissed && (
+            <div className="fixed bottom-32 right-4 z-40">
+              <button
+                type="button"
+                onClick={() => setDefuseModalDismissed(false)}
+                className="flex items-center gap-2 rounded-full border-4 border-cherry bg-amber-100 px-4 py-2.5 text-xs font-black uppercase tracking-[0.12em] text-cherry shadow-card ring-2 ring-cherry/30 animate-bounce"
+              >
+                💥 Gỡ Bom Mèo Nổ
+              </button>
+            </div>
+          )}
         </div>
 
-        <footer className="relative z-20 grid min-h-0 gap-2 rounded-2xl border-2 border-felt/90 bg-white/92 p-3 shadow-lift backdrop-blur-sm">
+        <footer className="sticky bottom-2 z-30 grid min-h-0 gap-2 rounded-2xl border-2 border-felt/90 bg-white/95 p-2.5 shadow-lift backdrop-blur-md sm:p-3 lg:relative lg:bottom-auto lg:z-20">
           {error && <p className="rounded-md bg-red-900 px-3 py-2 text-xs font-bold text-white">{error}</p>}
           {!hasGameState ? (
             <div className="text-xs font-bold text-ink/60">Đang tải dữ liệu phòng…</div>
           ) : isPlaying ? (
             <div>
-              <p className="mb-1 text-xs font-black uppercase tracking-[0.16em] text-stone-700">
-                Tay bài của bạn ({me?.handCount ?? 0})
+              <p className="mb-1 flex items-center justify-between text-xs font-black uppercase tracking-[0.16em] text-stone-700">
+                <span>Tay bài của bạn ({me?.handCount ?? 0})</span>
+                {isMyTurn && <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[10px] text-white">Đến lượt</span>}
               </p>
-              <div className="mb-2 flex flex-col gap-2 text-xs font-bold text-stone-700 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-                <span>
-                  Combo 2 mèo: {selectedCatCards.length}/2 — chọn hai lá cùng loại (hoặc Mèo Hoang + một mèo thường), chọn mục tiêu ở ô trên, rồi bấm để bốc{" "}
-                  <span className="font-black text-cherry">một lá bạn chọn</span> từ tay đối thủ.
-                </span>
-                <span className="font-bold text-ink">
-                  Mục tiêu: {aliveTargets.find((player) => player.id === targetPlayerId)?.name ?? "chưa có"}
-                </span>
+              <div className="mb-2 grid gap-1.5 text-[11px] font-bold text-stone-700 sm:flex sm:flex-wrap sm:items-center sm:justify-between sm:text-xs">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="rounded-full bg-amber-100 px-2 py-1 font-black text-amber-900">
+                    Combo mèo {selectedCatCards.length}/2
+                  </span>
+                  <span className="rounded-full bg-stone-100 px-2 py-1 font-bold text-ink">
+                    Mục tiêu: {aliveTargets.find((player) => player.id === targetPlayerId)?.name ?? "chưa có"}
+                  </span>
+                </div>
                 <button
                   disabled={isBusy || !isMyTurn || !!state?.actionPrompt || blockTableActions || selectedCatCards.length !== 2 || !targetPlayerId}
                   onClick={playSelectedCatCombo}
-                  className="h-8 w-full shrink-0 rounded-md bg-amber-700 px-3 text-[11px] font-black uppercase tracking-[0.12em] text-white shadow disabled:opacity-50 sm:w-auto"
+                  className="h-9 w-full shrink-0 rounded-xl bg-amber-700 px-3 text-[11px] font-black uppercase tracking-[0.12em] text-white shadow disabled:opacity-50 sm:h-8 sm:w-auto"
                 >
                   Bốc 1 lá tay địch
                 </button>
               </div>
-              <div className="grid max-h-[26vh] grid-cols-[repeat(auto-fill,minmax(104px,1fr))] gap-2 overflow-y-auto pr-1 sm:grid-cols-[repeat(auto-fill,minmax(118px,1fr))]">
+              <div className="grid max-h-[34vh] min-h-[140px] grid-cols-[repeat(auto-fill,minmax(96px,1fr))] gap-1.5 overflow-y-auto pr-1 sm:max-h-[28vh] sm:grid-cols-[repeat(auto-fill,minmax(108px,1fr))] sm:gap-2">
                 {me?.hand?.map((cardInstanceId, index) => {
                   const cardId = baseCardId(cardInstanceId);
                   const selectedCat = selectedCatCards.includes(cardInstanceId);
@@ -1158,7 +1452,20 @@ function RoomPageContent() {
                       className={`min-w-0 rounded-lg text-left disabled:cursor-not-allowed disabled:opacity-60 ${selectedCat ? "ring-4 ring-cherry" : ""}`}
                       whileHover={canPlay ? { y: -4 } : undefined}
                     >
-                      <CardView cardId={cardId} density="mini" />
+                      <div className="relative">
+                        <CardView cardId={cardId} density="mini" className="shadow-sm" />
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setDetailCardId(cardId);
+                          }}
+                          className="absolute right-1 top-1 rounded-full border border-ink/20 bg-white/90 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-[0.08em] text-ink shadow focus:outline-none focus:ring-2 focus:ring-cherry-glow"
+                          aria-label={`Xem chi tiết lá bài ${getCardData(cardId)?.title ?? cardId}`}
+                        >
+                          Xem
+                        </button>
+                      </div>
                     </motion.button>
                   );
                 })}
@@ -1174,13 +1481,19 @@ function RoomPageContent() {
             </div>
           )}
           {hasGameState && !isLobby && (
-            <div className="grid max-h-16 gap-1 overflow-y-auto text-xs font-semibold text-stone-700 sm:grid-cols-2">
-              {(state?.log ?? []).slice(-8).map((line, index) => (
-                <p key={`${line}-${index}`}>{line}</p>
-              ))}
-            </div>
+            <details className="rounded-xl border border-stone-200 bg-stone-50/80 px-2 py-1 text-[11px] font-semibold text-stone-700 sm:open:block lg:open:block">
+              <summary className="cursor-pointer list-none font-black uppercase tracking-[0.12em] text-stone-500 marker:content-none [&::-webkit-details-marker]:hidden">
+                Nhật ký gần đây
+              </summary>
+              <div className="mt-1 grid max-h-20 gap-1 overflow-y-auto sm:grid-cols-2">
+                {compactLog(state?.log ?? []).slice(-6).map((line, index) => (
+                  <p key={`${line}-${index}`} className="truncate">{line}</p>
+                ))}
+              </div>
+            </details>
           )}
         </footer>
+        <CardDetailModal cardId={detailCardId} onClose={() => setDetailCardId(null)} />
       </section>
     </main>
   );

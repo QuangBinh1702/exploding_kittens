@@ -4,7 +4,7 @@ export interface RoomSettings {
   id: string;
   name: string;
   maxPlayers: number;
-  /** Nếu có: chỉ chủ phòng được bắt đầu; chủ thoát ở sảnh chờ thì phòng bị xóa. */
+  targetDeckSize?: number;
   ownerPlayerId?: string;
   expansions: CardExpansion[];
   isPrivate: boolean;
@@ -20,6 +20,7 @@ export interface PublicRoomSummary {
   connectedPlayers: number;
   alivePlayers: number;
   drawPileCount: number;
+  targetDeckSize?: number;
   expansions: CardExpansion[];
   isPrivate: boolean;
   status: "LOBBY" | "PLAYING" | "FINISHED";

@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import { NextRequest, NextResponse } from "next/server";
 import {
   completeBury,
@@ -15,6 +17,7 @@ import {
   playNope,
   resolvePendingAction,
   resolveTurnTimeout,
+  shuffleVictimHand,
   startGame,
   toClientGameState,
   type ClientGameState,
@@ -46,7 +49,7 @@ function fallbackPlayers(playerId: string, playerName: string, maxPlayers: numbe
     { id: playerId, name: playerName },
     ...Array.from({ length: maxPlayers - 1 }, (_, index) => ({
       id: `slot-${index + 2}`,
-      name: `Người chơi ${index + 2}`,
+      name: `Player ${index + 2}`,
     })),
   ];
 }
@@ -99,6 +102,7 @@ export async function POST(
       | "confirmShareFuture"
       | "confirmDefuseExplosion"
       | "confirmCatSteal"
+      | "shuffleMyHand"
       | "leave";
     players?: Array<{ id: string; name: string }>;
     playerId?: string;
@@ -112,6 +116,7 @@ export async function POST(
     expansions?: CardExpansion[];
     forceNew?: boolean;
     maxPlayers?: number;
+    targetDeckSize?: number;
     roomName?: string;
     password?: string;
   };
@@ -126,15 +131,18 @@ export async function POST(
         }
 
         const creatorId = body.playerId ?? "p1";
-        const creatorName = body.playerName ?? "Chủ phòng";
-        const maxPlayers = 2;
+        const creatorName = body.playerName ?? "Host";
+        const maxPlayers = Math.min(8, Math.max(2, Math.floor(body.maxPlayers ?? 2)));
+        const minimumDeckSize = maxPlayers * 5 + (maxPlayers - 1) + 1;
+        const targetDeckSize = Math.min(120, Math.max(minimumDeckSize, Math.floor(body.targetDeckSize ?? 19 + maxPlayers * 5)));
         const expansions = body.expansions?.length
           ? body.expansions
-          : (["BASE", "IMPLODING", "STREAKING", "BARKING"] satisfies CardExpansion[]);
+          : (["BASE", "IMPLODING", "STREAKING", "BARKING", "ZOMBIE", "GOOD_VS_EVIL"] satisfies CardExpansion[]);
         const state = initializeGame({
           id,
           players: body.players ?? fallbackPlayers(creatorId, creatorName, maxPlayers),
           expansions,
+          targetDeckSize,
         });
         state.ownerPlayerId = creatorId;
         state.players.forEach((player, index) => {
@@ -144,8 +152,9 @@ export async function POST(
         const now = Date.now();
         const settings: RoomSettings = {
           id,
-          name: body.roomName?.trim() || `Phòng ${id}`,
+          name: body.roomName?.trim() || `Room ${id}`,
           maxPlayers,
+          targetDeckSize,
           ownerPlayerId: creatorId,
           expansions,
           isPrivate: Boolean(body.password?.trim()),
@@ -180,6 +189,7 @@ export async function POST(
           await redis.deleteRoom(id);
           return undefined;
         }
+        if (settings) settings.ownerPlayerId = disconnected.nextOwnerPlayerId;
       } else if (body.action === "start") {
         if (!body.playerId) throw new Error("playerId is required");
         const ownerId = settings?.ownerPlayerId ?? next.players[0]?.id;
@@ -259,6 +269,9 @@ export async function POST(
           playerId: body.playerId,
           stolenCardInstanceId: body.stolenCardInstanceId,
         });
+      } else if (body.action === "shuffleMyHand") {
+        if (!body.playerId) throw new Error("playerId is required");
+        next = shuffleVictimHand({ state: next, playerId: body.playerId });
       }
 
       if (settings) {

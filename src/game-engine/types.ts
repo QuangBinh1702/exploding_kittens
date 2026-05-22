@@ -45,8 +45,8 @@ export interface PendingAction {
 export interface ServerGameState {
   id: string;
   status: GameStatus;
-  /** Chủ phòng (trùng với RoomSettings.ownerPlayerId khi tạo). */
   ownerPlayerId?: PlayerId;
+  targetDeckSize?: number;
   players: PlayerState[];
   drawPile: string[];
   discardPile: string[];
@@ -76,6 +76,7 @@ export interface ServerGameState {
   pendingDefuseExplosion?: { playerId: PlayerId; explodingCardInstanceId: string };
   /** Two-cat combo played; stealer must choose one card from target's hand. */
   pendingCatSteal?: { playerId: PlayerId; targetPlayerId: PlayerId };
+  lastExplosion?: { playerId: PlayerId; playerName: string; cardId: string; eliminated: boolean; at: number };
   expansions: CardExpansion[];
   log: string[];
   updatedAt: number;
@@ -83,8 +84,8 @@ export interface ServerGameState {
 
 export interface ClientGameState {
   id: string;
-  /** Tên hiển thị từ cài đặt phòng (nếu có). */
   roomName?: string;
+  targetDeckSize?: number;
   status: GameStatus;
   players: PublicPlayerState[];
   drawPileCount: number;
@@ -116,12 +117,14 @@ export interface ClientGameState {
     | {
         type: "pick";
         targetName: string;
-        cards: readonly { instanceId: string; baseId: string }[];
+        cards: readonly { instanceId: string }[];
       }
     | {
         type: "wait_pick";
         stealerName: string;
+        cardCount: number;
       };
+  lastExplosion?: { playerId: PlayerId; playerName: string; cardId: string; eliminated: boolean; at: number };
   log: string[];
   updatedAt: number;
 }
@@ -140,6 +143,25 @@ export type GameAction =
   | { type: "DRAW_FROM_BOTTOM" }
   | { type: "SWAP_TOP_BOTTOM" }
   | { type: "CATOMIC_BOMB" }
+  | { type: "FAVOR"; targetPlayerId: PlayerId }
+  | { type: "MARK"; targetPlayerId: PlayerId }
+  | { type: "CURSE_OF_CAT_BUTT"; targetPlayerId: PlayerId }
+  | { type: "BARKING_KITTEN"; targetPlayerId?: PlayerId }
+  | { type: "TOWER_OF_POWER" }
+  | { type: "ILL_TAKE_THAT"; targetPlayerId?: PlayerId }
+  | { type: "ATTACK_OF_THE_DEAD" }
+  | { type: "CLAIRVOYANCE"; targetPlayerId: PlayerId }
+  | { type: "CLONE" }
+  | { type: "DIG_DEEPER" }
+  | { type: "FEED_THE_DEAD"; targetPlayerId?: PlayerId }
+  | { type: "GRAVE_ROBBER"; targetPlayerId?: PlayerId }
+  | { type: "SHUFFLE_NOW" }
+  | { type: "ARMAGEDDON"; targetPlayerId?: PlayerId }
+  | { type: "GODCAT" }
+  | { type: "DEVILCAT"; targetPlayerId?: PlayerId }
+  | { type: "RAISING_HECK" }
+  | { type: "POTLUCK" }
+  | { type: "REVEAL"; count: number }
   | { type: "PROMPT"; prompt: string }
   | { type: "CAT_COMBO" };
 
@@ -147,6 +169,7 @@ export interface InitializeGameInput {
   id: string;
   players: Array<{ id: PlayerId; name: string }>;
   expansions?: CardExpansion[];
+  targetDeckSize?: number;
   random?: () => number;
 }
 

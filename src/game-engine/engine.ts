@@ -127,17 +127,22 @@ export function initializeGame({
   id,
   players,
   expansions = ["BASE"],
+  targetDeckSize,
   random = Math.random,
 }: InitializeGameInput): ServerGameState {
   if (players.length < 2) throw new Error("Need at least 2 players");
   if (players.length > 8) throw new Error("This implementation supports up to 8 players");
 
-  const baseDeck = createDeckCardIds(expansions);
-  /** Mèo Nổ trong xấp rút = số người − 1 (luật chính thức). */
   const explosionCount = players.length - 1;
-  const exploding = baseDeck.filter((cardId) => cardId === "exploding-kitten").slice(0, explosionCount);
-  const defuses = baseDeck.filter((cardId) => cardId === "defuse");
-  const normalCards = baseDeck.filter((cardId) => cardId !== "exploding-kitten" && cardId !== "defuse");
+  const minimumDeckSize = players.length * 5 + explosionCount + 1;
+  const finalDeckSize = Math.min(120, Math.max(minimumDeckSize, Math.floor(targetDeckSize ?? 19 + players.length * 5)));
+  const normalCardCount = finalDeckSize - players.length - explosionCount - 1;
+  const baseDeck = createDeckCardIds(expansions);
+  const exploding = Array.from({ length: explosionCount }, () => "exploding-kitten");
+  const normalCards = shuffle(
+    baseDeck.filter((cardId) => cardId !== "exploding-kitten" && cardId !== "defuse"),
+    random,
+  ).slice(0, normalCardCount);
 
   let counter = 0;
   const pile = shuffle(normalCards.map((cardId) => makeInstance(cardId, counter++)), random);
@@ -158,11 +163,9 @@ export function initializeGame({
     }
   }
 
-  const remainingDefuses = defuses.slice(players.length).map((cardId) => makeInstance(cardId, counter++));
   const explosions = exploding.map((cardId) => makeInstance(cardId, counter++));
-  /** Thêm đúng 1 lá Gỡ Bom vào xấp rút (may rủi / lật kèo), ngoài các lá Gỡ Bom còn lại của bộ bài gốc. */
   const extraDefuseInPile = makeInstance("defuse", counter++);
-  const drawPile = shuffle([...pile, ...remainingDefuses, extraDefuseInPile, ...explosions], random);
+  const drawPile = shuffle([...pile, extraDefuseInPile, ...explosions], random);
   const startedAt = Date.now();
 
   return {
@@ -177,10 +180,11 @@ export function initializeGame({
     turnStartedAt: startedAt,
     turnExpiresAt: 0,
     insights: [],
+    targetDeckSize: finalDeckSize,
     expansions: [...expansions],
     log: [
-      `Phòng đã tạo với tối đa ${players.length} người chơi.`,
-      `Gỡ Bom: ${players.length} lá trên tay (mỗi người 1) + 1 lá thêm trong xấp rút. Mèo Nổ trong xấp: ${explosionCount} lá (số người − 1).`,
+      `Room created for up to ${players.length} players.`,
+      `Deck size: ${players.length * 5 + drawPile.length} cards (${players.length * 5 + drawPile.length} lá). Defuse: ${players.length} starting cards + 1 in the draw pile. Exploding Kittens in pile: ${explosionCount}.`,
     ],
     updatedAt: startedAt,
   };
@@ -223,9 +227,17 @@ export function joinGame(state: ServerGameState, playerId: PlayerId, name: strin
   return next;
 }
 
-function eliminateExplodingPlayer(state: ServerGameState, player: PlayerState, card: string) {
+function eliminateExplodingPlayer(state: ServerGameState, player: PlayerState, card: string, now = Date.now()) {
   state.discardPile.push(card);
   player.alive = false;
+  state.lastExplosion = {
+    playerId: player.id,
+    playerName: player.name,
+    cardId: getCardBaseId(card),
+    eliminated: true,
+    at: now,
+  };
+  addTableMessage(state, "BOOM!", `${player.name} rút Mèo Nổ, không còn Gỡ Bom/Zombie Kitten và đã bị loại khỏi ván.`);
   state.log.push(`${player.name} đã nổ và bị loại.`);
 }
 
@@ -233,6 +245,7 @@ function resolveExplodingKittenDraw(
   state: ServerGameState,
   player: PlayerState,
   card: string,
+  now = Date.now(),
 ): "streaking" | "pending_defuse" | "eliminated" {
   const streaking = player.hand.some((handCard) => getCardBaseId(handCard) === "streaking-kitten");
   if (streaking) {
@@ -241,14 +254,23 @@ function resolveExplodingKittenDraw(
     return "streaking";
   }
 
-  const defuseIndex = player.hand.findIndex((handCard) => getCardBaseId(handCard) === "defuse");
+  const defuseIndex = player.hand.findIndex(
+    (handCard) => getCardBaseId(handCard) === "defuse" || getCardBaseId(handCard) === "zombie-kitten",
+  );
   if (defuseIndex >= 0) {
     state.pendingDefuseExplosion = { playerId: player.id, explodingCardInstanceId: card };
+    state.lastExplosion = {
+      playerId: player.id,
+      playerName: player.name,
+      cardId: getCardBaseId(card),
+      eliminated: false,
+      at: now,
+    };
     state.log.push(`${player.name} rút Mèo Nổ! Dùng Gỡ Bom và chọn vị trí để chôn lại lá Mèo Nổ.`);
     return "pending_defuse";
   }
 
-  eliminateExplodingPlayer(state, player, card);
+  eliminateExplodingPlayer(state, player, card, now);
   return "eliminated";
 }
 
@@ -269,11 +291,14 @@ export function drawCard(state: ServerGameState, playerId: PlayerId, fromBottom 
 
   const baseId = getCardBaseId(card);
   if (baseId === "exploding-kitten") {
-    const outcome = resolveExplodingKittenDraw(next, player, card);
+    const outcome = resolveExplodingKittenDraw(next, player, card, now);
     if (outcome === "pending_defuse") {
       next.updatedAt = now;
       return next;
     }
+  } else if (baseId === "zombie-kitten") {
+    player.hand.push(card);
+    next.log.push(`${player.name} rút một lá Zombie Kitten.`);
   } else if (baseId === "imploding-kitten") {
     next.discardPile.push(card);
     player.alive = false;
@@ -324,6 +349,49 @@ function actionForCard(cardId: string, targetPlayerId?: PlayerId): GameAction {
       return { type: "SWAP_TOP_BOTTOM" };
     case "catomic-bomb":
       return { type: "CATOMIC_BOMB" };
+    case "favor":
+      if (!targetPlayerId) throw new Error("Favor requires targetPlayerId");
+      return { type: "FAVOR", targetPlayerId };
+    case "mark":
+      if (!targetPlayerId) throw new Error("Mark requires targetPlayerId");
+      return { type: "MARK", targetPlayerId };
+    case "curse-of-cat-butt":
+      if (!targetPlayerId) throw new Error("Curse of Cat Butt requires targetPlayerId");
+      return { type: "CURSE_OF_CAT_BUTT", targetPlayerId };
+    case "barking-kitten":
+      return { type: "BARKING_KITTEN", targetPlayerId };
+    case "tower-of-power":
+      return { type: "TOWER_OF_POWER" };
+    case "ill-take-that":
+      return { type: "ILL_TAKE_THAT", targetPlayerId };
+    case "attack-of-the-dead":
+      return { type: "ATTACK_OF_THE_DEAD" };
+    case "clairvoyance":
+      if (!targetPlayerId) throw new Error("Clairvoyance requires targetPlayerId");
+      return { type: "CLAIRVOYANCE", targetPlayerId };
+    case "clone":
+      return { type: "CLONE" };
+    case "dig-deeper":
+      return { type: "DIG_DEEPER" };
+    case "feed-the-dead":
+      return { type: "FEED_THE_DEAD", targetPlayerId };
+    case "grave-robber":
+      return { type: "GRAVE_ROBBER", targetPlayerId };
+    case "shuffle-now":
+      return { type: "SHUFFLE_NOW" };
+    case "armageddon":
+      if (!targetPlayerId) throw new Error("Armageddon requires targetPlayerId");
+      return { type: "ARMAGEDDON", targetPlayerId };
+    case "godcat":
+      return { type: "GODCAT" };
+    case "devilcat":
+      return { type: "DEVILCAT", targetPlayerId };
+    case "raising-heck":
+      return { type: "RAISING_HECK" };
+    case "potluck":
+      return { type: "POTLUCK" };
+    case "reveal-the-future-3x":
+      return { type: "REVEAL", count: 3 };
     default:
       return { type: "PROMPT", prompt: `Card ${cardId} requires a follow-up choice.` };
   }
@@ -352,6 +420,24 @@ function addTableMessage(state: ServerGameState, title: string, message: string)
   for (const player of state.players.filter((candidate) => candidate.connected)) {
     addInsight(state, player.id, title, [], message);
   }
+}
+
+function aliveOpponents(state: ServerGameState, playerId: PlayerId) {
+  return state.players.filter((player) => player.alive && player.id !== playerId);
+}
+
+function eliminatedPlayersWithCards(state: ServerGameState) {
+  return state.players.filter((player) => !player.alive && player.hand.length > 0);
+}
+
+function lastCloneableCardId(state: ServerGameState) {
+  for (let index = state.discardPile.length - 2; index >= 0; index -= 1) {
+    const baseId = getCardBaseId(state.discardPile[index]);
+    if (baseId !== "clone" && baseId !== "nope" && baseId !== "defuse" && baseId !== "exploding-kitten") {
+      return baseId;
+    }
+  }
+  return undefined;
 }
 
 function isNormalCatCard(cardInstanceId: string) {
@@ -553,13 +639,49 @@ export function completeDefuseExplosion({
   }
 
   const player = getPlayer(next, playerId);
-  const defuseIndex = player.hand.findIndex((handCard) => getCardBaseId(handCard) === "defuse");
-  if (defuseIndex < 0) throw new Error("No Defuse card in hand");
+  const defuseIndex = player.hand.findIndex(
+    (handCard) => getCardBaseId(handCard) === "defuse" || getCardBaseId(handCard) === "zombie-kitten",
+  );
+  if (defuseIndex < 0) throw new Error("No Defuse or Zombie Kitten card in hand");
 
   const [defuse] = player.hand.splice(defuseIndex, 1);
   next.discardPile.push(defuse);
+  const revived = getCardBaseId(defuse) === "zombie-kitten"
+    ? next.players.find((candidate) => !candidate.alive)
+    : undefined;
+  if (revived) {
+    revived.alive = true;
+    revived.connected = true;
+    if (player.hand.length > 0) {
+      revived.hand.push(player.hand.shift()!);
+    } else {
+      const gift = next.drawPile.findIndex((card) => getCardBaseId(card) !== "exploding-kitten");
+      if (gift >= 0) revived.hand.push(next.drawPile.splice(gift, 1)[0]);
+    }
+    const liveBombs = next.drawPile.filter((card) => getCardBaseId(card) === "exploding-kitten").length + 1;
+    const aliveAfterRevive = next.players.filter((candidate) => candidate.alive).length;
+    const neededBombs = Math.max(0, aliveAfterRevive - 1);
+    for (let i = liveBombs; i < neededBombs; i += 1) {
+      next.drawPile.unshift(makeInstance("exploding-kitten", now + i));
+    }
+    next.log.push(`${player.name} dùng Zombie Kitten và hồi sinh ${revived.name}.`);
+  }
   next.drawPile.splice(insertIndex, 0, pending.explodingCardInstanceId);
   next.pendingDefuseExplosion = undefined;
+  next.lastExplosion = {
+    playerId: player.id,
+    playerName: player.name,
+    cardId: getCardBaseId(pending.explodingCardInstanceId),
+    eliminated: false,
+    at: now,
+  };
+  addTableMessage(
+    next,
+    getCardBaseId(defuse) === "zombie-kitten" ? "Zombie Kitten" : "Gỡ Bom thành công",
+    revived
+      ? `${player.name} chôn Mèo Nổ trở lại xấp rút và hồi sinh ${revived.name}. Số Mèo Nổ trong xấp được cân bằng theo số người còn sống.`
+      : `${player.name} chôn Mèo Nổ trở lại xấp rút và tiếp tục ván.`,
+  );
 
   next.log.push(`${player.name} dùng Gỡ Bom và chôn Mèo Nổ vào xấp rút.`);
   finishOneTurn(next, now);
@@ -572,18 +694,25 @@ export function markPlayerDisconnected(
   playerId: PlayerId,
   ownerPlayerId: PlayerId | undefined,
   now = Date.now(),
-): { state: ServerGameState; shouldDeleteRoom: boolean } {
+): { state: ServerGameState; shouldDeleteRoom: boolean; nextOwnerPlayerId?: PlayerId } {
   const next = cloneState(state);
   const player = next.players.find((p) => p.id === playerId);
   if (player) {
     if (player.connected) {
-      next.log.push(`${player.name} đã rời phòng.`);
+      next.log.push(`${player.name} left the room.`);
     }
     player.connected = false;
   }
+
+  const connectedPlayers = next.players.filter((candidate) => candidate.connected);
+  const nextOwnerPlayerId = ownerPlayerId === playerId ? connectedPlayers[0]?.id : ownerPlayerId;
+  if (nextOwnerPlayerId && nextOwnerPlayerId !== ownerPlayerId) {
+    const nextOwner = next.players.find((candidate) => candidate.id === nextOwnerPlayerId);
+    next.log.push(`${nextOwner?.name ?? "A player"} is now the host.`);
+  }
+  next.ownerPlayerId = nextOwnerPlayerId;
   next.updatedAt = now;
-  const shouldDeleteRoom = next.status === "LOBBY" && Boolean(ownerPlayerId && ownerPlayerId === playerId);
-  return { state: next, shouldDeleteRoom };
+  return { state: next, shouldDeleteRoom: connectedPlayers.length === 0, nextOwnerPlayerId };
 }
 
 export function playCatCombo({
@@ -670,6 +799,32 @@ export function completeCatSteal({
   addInsight(next, target.id, "Bị bóc bài", [], `${actor.name} đã dùng combo 2 mèo để lấy 1 lá từ tay bạn.`);
   next.log.push(`${actor.name} đã lấy một lá từ ${target.name}.`);
   nowWithTurn(next, now);
+  next.updatedAt = now;
+  return next;
+}
+
+export function shuffleVictimHand({
+  state,
+  playerId,
+  random = Math.random,
+  now = Date.now(),
+}: {
+  state: ServerGameState;
+  playerId: PlayerId;
+  random?: () => number;
+  now?: number;
+}): ServerGameState {
+  const next = cloneState(state);
+  assertPlaying(next);
+  const pending = next.pendingCatSteal;
+  if (!pending) throw new Error("No cat steal step is active");
+  if (pending.targetPlayerId !== playerId) {
+    throw new Error("Only the target of the steal can shuffle their own hand");
+  }
+  const target = getPlayer(next, playerId);
+  if (target.hand.length <= 1) return state;
+  target.hand = shuffle(target.hand, random);
+  next.log.push(`${target.name} đã xáo lại bài trên tay.`);
   next.updatedAt = now;
   return next;
 }
@@ -806,6 +961,205 @@ function applyAction(state: ServerGameState, playerId: PlayerId, action: GameAct
       state.log.push(`${actor.name} dùng Chia Sẻ Tương Lai (${count} lá).`);
       break;
     }
+    case "FAVOR": {
+      const target = getPlayer(state, action.targetPlayerId);
+      if (target.hand.length === 0) {
+        addInsight(state, playerId, "Favor", [], `${target.name} không có lá nào để đưa.`);
+        break;
+      }
+      const given = target.hand.shift()!;
+      actor.hand.push(given);
+      addInsight(state, playerId, "Favor", [getCardBaseId(given)], `${target.name} đưa cho bạn một lá.`);
+      addInsight(state, target.id, "Favor", [], `Bạn đưa một lá cho ${actor.name}.`);
+      state.log.push(`${actor.name} nhận một lá từ ${target.name}.`);
+      nowWithTurn(state, now);
+      break;
+    }
+    case "MARK": {
+      const target = getPlayer(state, action.targetPlayerId);
+      const marked = target.hand[0];
+      if (!marked) {
+        addInsight(state, playerId, "Mark", [], `${target.name} không có bài trên tay.`);
+        break;
+      }
+      addTableMessage(state, "Marked Card", `${actor.name} đánh dấu một lá trên tay ${target.name}.`);
+      addInsight(state, playerId, `Marked: ${target.name}`, [getCardBaseId(marked)], "Lá này đang bị lộ.");
+      addInsight(state, target.id, "Marked", [getCardBaseId(marked)], "Một lá trên tay bạn đang bị lộ.");
+      state.log.push(`${actor.name} đánh dấu một lá của ${target.name}.`);
+      nowWithTurn(state, now);
+      break;
+    }
+    case "CURSE_OF_CAT_BUTT": {
+      const target = getPlayer(state, action.targetPlayerId);
+      addInsight(state, target.id, "Curse of Cat Butt", [], "Bạn bị nguyền: hãy chơi cẩn thận cho đến lượt rút tiếp theo.");
+      state.log.push(`${actor.name} nguyền ${target.name}.`);
+      nowWithTurn(state, now);
+      break;
+    }
+    case "BARKING_KITTEN": {
+      const target = action.targetPlayerId ? getPlayer(state, action.targetPlayerId) : aliveOpponents(state, playerId)[0];
+      if (!target) break;
+      const taken = target.hand.shift();
+      if (taken) actor.hand.push(taken);
+      addInsight(state, playerId, "Barking Kitten", taken ? [getCardBaseId(taken)] : [], `Bạn kéo ${target.name} vào cuộc đối đầu.`);
+      state.log.push(`${actor.name} dùng Barking Kitten với ${target.name}.`);
+      nowWithTurn(state, now);
+      break;
+    }
+    case "TOWER_OF_POWER":
+      actor.hand.push(`nope#tower-${now}`);
+      addInsight(state, playerId, "Tower of Power", ["nope"], "Tháp Quyền Lực cấp cho bạn một Nope phòng thủ tạm thời.");
+      state.log.push(`${actor.name} dựng Tháp Quyền Lực.`);
+      nowWithTurn(state, now);
+      break;
+    case "ILL_TAKE_THAT": {
+      const target = action.targetPlayerId ? getPlayer(state, action.targetPlayerId) : aliveOpponents(state, playerId)[0];
+      if (!target) break;
+      const card = state.drawPile.pop();
+      if (card) actor.hand.push(card);
+      addInsight(state, playerId, "I'll Take That", card ? [getCardBaseId(card)] : [], `Bạn lấy lá rút kế tiếp của ${target.name}.`);
+      state.log.push(`${actor.name} lấy trước lá rút kế tiếp.`);
+      nowWithTurn(state, now);
+      break;
+    }
+    case "ATTACK_OF_THE_DEAD": {
+      const deadCount = state.players.filter((player) => !player.alive).length;
+      finishOneTurn(state, now);
+      state.pendingTurns += Math.max(1, deadCount + 1);
+      state.log.push(`${actor.name} uses Attack of the Dead for ${deadCount + 2} turns.`);
+      break;
+    }
+    case "CLAIRVOYANCE": {
+      const target = getPlayer(state, action.targetPlayerId);
+      addInsight(state, playerId, `Clairvoyance: ${target.name}`, target.hand.map(getCardBaseId), "You see this player's hand.");
+      state.log.push(`${actor.name} uses Clairvoyance on ${target.name}.`);
+      break;
+    }
+    case "CLONE": {
+      const baseId = lastCloneableCardId(state);
+      if (!baseId) {
+        addInsight(state, playerId, "Clone", [], "No previous action card to copy.");
+        break;
+      }
+      state.log.push(`${actor.name} clones ${getCardData(baseId)?.title ?? baseId}.`);
+      applyAction(state, playerId, actionForCard(baseId, aliveOpponents(state, playerId)[0]?.id), now);
+      break;
+    }
+    case "DIG_DEEPER": {
+      if (state.drawPile.length === 0) break;
+      const first = state.drawPile.pop()!;
+      const second = state.drawPile.pop();
+      if (second) {
+        actor.hand.push(second);
+        state.drawPile.push(first);
+        addInsight(state, playerId, "Dig Deeper", [getCardBaseId(first), getCardBaseId(second)], "First card returned; you took the next card.");
+      } else {
+        actor.hand.push(first);
+        addInsight(state, playerId, "Dig Deeper", [getCardBaseId(first)], "Only one card remained, so you took it.");
+      }
+      nowWithTurn(state, now);
+      state.log.push(`${actor.name} digs deeper.`);
+      break;
+    }
+    case "FEED_THE_DEAD": {
+      const dead = action.targetPlayerId
+        ? state.players.find((player) => player.id === action.targetPlayerId && !player.alive)
+        : state.players.find((player) => !player.alive);
+      if (!dead) {
+        addInsight(state, playerId, "Feed the Dead", [], "No eliminated player can receive cards.");
+        break;
+      }
+      for (const player of state.players.filter((candidate) => candidate.alive && candidate.id !== playerId && candidate.hand.length > 0)) {
+        dead.hand.push(player.hand.shift()!);
+      }
+      state.log.push(`${actor.name} feeds cards to ${dead.name}.`);
+      nowWithTurn(state, now);
+      break;
+    }
+    case "GRAVE_ROBBER": {
+      const deadPlayers = eliminatedPlayersWithCards(state);
+      if (deadPlayers.length === 0) {
+        addInsight(state, playerId, "Grave Robber", [], "No eliminated player has cards.");
+        break;
+      }
+      const returned = deadPlayers.flatMap((dead) => dead.hand.splice(0, 1));
+      state.drawPile = shuffle([...state.drawPile, ...returned], Math.random);
+      addTableMessage(state, "Grave Robber", `${returned.length} dead-player cards were shuffled into the draw pile.`);
+      nowWithTurn(state, now);
+      break;
+    }
+    case "SHUFFLE_NOW":
+      state.drawPile = shuffle(state.drawPile, Math.random);
+      addTableMessage(state, "Shuffle Now", `${actor.name} shuffled the draw pile immediately.`);
+      nowWithTurn(state, now);
+      break;
+    case "ARMAGEDDON": {
+      const target = getPlayer(state, action.targetPlayerId!);
+      const actorHasGodcat = actor.hand.findIndex((card) => getCardBaseId(card) === "godcat");
+      const targetHasDevilcat = target.hand.findIndex((card) => getCardBaseId(card) === "devilcat");
+      addTableMessage(
+        state,
+        "Armageddon",
+        `${actor.name} thách đấu ${target.name}. Godcat bảo vệ người giữ nó; Devilcat đốt 1 lá của đối thủ. Nếu chưa có Godcat/Devilcat trên tay, ván không kết thúc ngẫu nhiên.`,
+      );
+      if (actorHasGodcat >= 0 && targetHasDevilcat >= 0) {
+        const [godcat] = actor.hand.splice(actorHasGodcat, 1);
+        const [devilcat] = target.hand.splice(targetHasDevilcat, 1);
+        state.discardPile.push(godcat, devilcat);
+        if (target.hand.length > 0) state.discardPile.push(target.hand.shift()!);
+        state.log.push(`${actor.name} thắng Armageddon bằng Godcat; ${target.name} mất 1 lá.`);
+      } else if (targetHasDevilcat >= 0 && actor.hand.length > 0) {
+        state.discardPile.push(actor.hand.shift()!);
+        state.log.push(`${target.name} phản công Armageddon bằng Devilcat; ${actor.name} mất 1 lá.`);
+      } else if (actorHasGodcat >= 0) {
+        addInsight(state, playerId, "Armageddon", ["godcat"], "Bạn có Godcat nên an toàn, nhưng đối thủ chưa có Devilcat để phân thắng bại.");
+        state.log.push(`${actor.name} kích hoạt Armageddon nhưng chưa có Devilcat đối đầu.`);
+      } else {
+        addInsight(state, playerId, "Armageddon", [], "Không có Godcat/Devilcat trong tay hai bên, Armageddon chỉ cảnh báo và không loại ai.");
+        state.log.push(`${actor.name} kích hoạt Armageddon nhưng chưa đủ lá Thiện/Ác để phân thắng bại.`);
+      }
+      nowWithTurn(state, now);
+      break;
+    }
+    case "GODCAT":
+      actor.hand.push(`defuse#godcat-${now}`);
+      addInsight(state, playerId, "Godcat", ["defuse"], "Godcat grants a temporary Defuse.");
+      nowWithTurn(state, now);
+      break;
+    case "DEVILCAT": {
+      const target = action.targetPlayerId ? getPlayer(state, action.targetPlayerId) : aliveOpponents(state, playerId)[0];
+      if (!target) break;
+      if (target.hand.length > 0) state.discardPile.push(target.hand.shift()!);
+      addInsight(state, target.id, "Devilcat", [], `${actor.name} burned one card from your hand.`);
+      nowWithTurn(state, now);
+      break;
+    }
+    case "RAISING_HECK": {
+      const bombs = state.drawPile.filter((card) => getCardBaseId(card) === "exploding-kitten");
+      const rest = state.drawPile.filter((card) => getCardBaseId(card) !== "exploding-kitten");
+      state.drawPile = [...bombs, ...rest];
+      addTableMessage(state, "Raising Heck", `${actor.name} pushed danger toward the bottom of the draw pile.`);
+      nowWithTurn(state, now);
+      break;
+    }
+    case "POTLUCK": {
+      const returned: string[] = [];
+      for (const player of state.players.filter((candidate) => candidate.alive && candidate.hand.length > 0)) {
+        returned.push(player.hand.shift()!);
+      }
+      state.drawPile.push(...returned);
+      addTableMessage(state, "Potluck", `${returned.length} players placed one card on top of the draw pile.`);
+      nowWithTurn(state, now);
+      break;
+    }
+    case "REVEAL": {
+      const cards = state.drawPile.slice(-action.count).map(getCardBaseId).reverse();
+      for (const player of state.players.filter((candidate) => candidate.connected)) {
+        addInsight(state, player.id, `Reveal the Future ${cards.length}x`, cards, "All players see these cards.");
+      }
+      state.log.push(`${actor.name} reveals ${cards.length} future cards.`);
+      break;
+    }
     case "PROMPT":
       addInsight(state, playerId, "Cần chọn thêm", [], action.prompt);
       state.log.push(`${actor.name} đánh một lá cần lựa chọn thêm.`);
@@ -832,7 +1186,9 @@ export function playCard({ state, playerId, cardInstanceId, targetPlayerId, now 
   const baseId = getCardBaseId(played);
   const card = getCardData(baseId);
   if (!card) throw new Error(`Unknown card: ${baseId}`);
-  if (baseId === "defuse" || baseId === "exploding-kitten") throw new Error("This card cannot be played manually");
+  if (baseId === "defuse" || baseId === "exploding-kitten" || baseId === "zombie-kitten") {
+    throw new Error("This card cannot be played manually");
+  }
 
   next.discardPile.push(played);
   const action = actionForCard(baseId, targetPlayerId);
@@ -922,6 +1278,7 @@ export function resolveTurnTimeout(state: ServerGameState, now = Date.now()): Se
 export function toClientGameState(state: ServerGameState, viewerId?: PlayerId): ClientGameState {
   return {
     id: state.id,
+    targetDeckSize: state.targetDeckSize,
     status: state.status,
     players: state.players.map((player) => ({
       id: player.id,
@@ -992,6 +1349,7 @@ export function toClientGameState(state: ServerGameState, viewerId?: PlayerId): 
             maxInsertIndex: state.drawPile.length,
           }
         : undefined,
+    lastExplosion: state.lastExplosion,
     pendingCatSteal: (() => {
       const p = state.pendingCatSteal;
       if (!p || !viewerId) return undefined;
@@ -1005,12 +1363,15 @@ export function toClientGameState(state: ServerGameState, viewerId?: PlayerId): 
           targetName,
           cards: (target?.hand ?? []).map((instanceId) => ({
             instanceId,
-            baseId: getCardBaseId(instanceId),
           })),
         };
       }
       if (viewerId === p.targetPlayerId) {
-        return { type: "wait_pick" as const, stealerName };
+        return {
+          type: "wait_pick" as const,
+          stealerName,
+          cardCount: target?.hand.length ?? 0,
+        };
       }
       return undefined;
     })(),

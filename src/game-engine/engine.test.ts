@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { getCardData } from "@/data/cardsData";
 import {
   completeCatSteal,
   completeDefuseExplosion,
@@ -35,6 +34,37 @@ describe("game engine", () => {
     expect(two.drawPile.filter((c) => getCardBaseId(c) === "exploding-kitten")).toHaveLength(1);
     const three = initializeGame({ id: "test", players, random: () => 0.42 });
     expect(three.drawPile.filter((c) => getCardBaseId(c) === "exploding-kitten")).toHaveLength(2);
+  });
+
+  it.each([
+    [2, 29],
+    [3, 34],
+    [4, 39],
+    [5, 44],
+    [6, 49],
+    [7, 54],
+    [8, 59],
+  ])("uses a player-scaled initial deck for %i players", (playerCount, expectedTotalCards) => {
+    const inputPlayers = Array.from({ length: playerCount }, (_, index) => ({
+      id: `p${index + 1}`,
+      name: `Player ${index + 1}`,
+    }));
+
+    const state = initializeGame({
+      id: `scaled-${playerCount}`,
+      players: inputPlayers,
+      expansions: ["BASE", "IMPLODING", "STREAKING", "BARKING", "ZOMBIE", "GOOD_VS_EVIL"],
+      random: () => 0.42,
+    });
+
+    const hands = state.players.flatMap((player) => player.hand);
+    const allCards = [...hands, ...state.drawPile];
+    expect(allCards).toHaveLength(expectedTotalCards);
+    expect(state.players.every((player) => player.hand.length === 5)).toBe(true);
+    expect(state.drawPile.filter((card) => getCardBaseId(card) === "exploding-kitten")).toHaveLength(playerCount - 1);
+    expect(hands.filter((card) => getCardBaseId(card) === "defuse")).toHaveLength(playerCount);
+    expect(state.drawPile.filter((card) => getCardBaseId(card) === "defuse")).toHaveLength(1);
+    expect(state.log.at(-1)).toContain(`${expectedTotalCards} lá`);
   });
 
   it("initializes as a lobby without exposing hands or starting the turn timer", () => {
@@ -86,9 +116,8 @@ describe("game engine", () => {
   it("resets turn timer after playing a nopeable card (still same turn)", () => {
     const game = startedGame(players.slice(0, 2), 20_000);
     const p1 = game.players[0];
-    const nopeableId = p1.hand.find((c) => getCardData(getCardBaseId(c))?.nopeable);
-    expect(nopeableId).toBeDefined();
-    if (!nopeableId) return;
+    p1.hand.push("skip#timer-test");
+    const nopeableId = "skip#timer-test";
     const before = game.turnExpiresAt;
     const after = playCard({ state: game, playerId: p1.id, cardInstanceId: nopeableId, now: 25_000 });
     expect(after.turnExpiresAt).toBe(55_000);
@@ -269,4 +298,173 @@ describe("game engine", () => {
     expect(resolved.players[0].hand.length).toBeGreaterThanOrEqual(handCount);
     expect(resolved.currentPlayerIndex).toBe(1);
   });
+
+  it("uses Zombie Kitten as explosion protection and revives an eliminated player", () => {
+    const state = startedGame(players.slice(0, 3));
+    state.players[0].hand = ["zombie-kitten#z1", "skip#gift"];
+    state.players[1].alive = false;
+    state.players[1].hand = [];
+    state.drawPile.push("exploding-kitten#boom");
+
+    const pending = drawCard(state, "p1", false, 5000);
+    expect(pending.pendingDefuseExplosion?.explodingCardInstanceId).toBe("exploding-kitten#boom");
+
+    const resolved = completeDefuseExplosion({ state: pending, playerId: "p1", insertIndex: 0, now: 6000 });
+    expect(resolved.players[0].hand).not.toContain("zombie-kitten#z1");
+    expect(resolved.players[1].alive).toBe(true);
+    expect(resolved.players[1].hand).toContain("skip#gift");
+  });
+
+  it("applies several new expansion actions", () => {
+    const state = startedGame(players.slice(0, 3));
+    state.players[2].alive = false;
+    state.players[0].hand.push("attack-of-the-dead#a1", "clairvoyance#c1", "dig-deeper#d1");
+    state.drawPile = ["bottom#1", "kept-top#2", "taken-second#3"];
+
+    const attackPending = playCard({ state, playerId: "p1", cardInstanceId: "attack-of-the-dead#a1", now: 1000 });
+    const attackResolved = resolvePendingAction(attackPending, 7000);
+    expect(attackResolved.pendingTurns).toBeGreaterThanOrEqual(3);
+
+    attackResolved.currentPlayerIndex = 0;
+    const clairPending = playCard({
+      state: attackResolved,
+      playerId: "p1",
+      cardInstanceId: "clairvoyance#c1",
+      targetPlayerId: "p2",
+      now: 8000,
+    });
+    const clairResolved = resolvePendingAction(clairPending, 14000);
+    expect(toClientGameState(clairResolved, "p1").insight?.cards).toEqual(
+      clairResolved.players[1].hand.map(getCardBaseId),
+    );
+
+    const digPending = playCard({ state: clairResolved, playerId: "p1", cardInstanceId: "dig-deeper#d1", now: 15000 });
+    const digResolved = resolvePendingAction(digPending, 21000);
+    expect(digResolved.players[0].hand).toContain("kept-top#2");
+    expect(digResolved.drawPile.at(-1)).toBe("taken-second#3");
+  });
+
+  it("clones the previous action and handles Good vs Evil utility cards", () => {
+    const state = startedGame(players.slice(0, 2));
+    state.players[0].hand.push("skip#s1", "clone#c1", "godcat#g1", "devilcat#d1", "potluck#p1");
+    const targetInitialHand = state.players[1].hand.length;
+
+    const skipPending = playCard({ state, playerId: "p1", cardInstanceId: "skip#s1", now: 1000 });
+    const afterSkip = resolvePendingAction(skipPending, 7000);
+    afterSkip.currentPlayerIndex = 0;
+
+    const clonePending = playCard({ state: afterSkip, playerId: "p1", cardInstanceId: "clone#c1", now: 8000 });
+    const afterClone = resolvePendingAction(clonePending, 14000);
+    expect(afterClone.log.join(" ")).toContain("clones");
+    afterClone.currentPlayerIndex = 0;
+
+    const afterGodcat = playCard({ state: afterClone, playerId: "p1", cardInstanceId: "godcat#g1", now: 15000 });
+    expect(afterGodcat.players[0].hand.some((card) => getCardBaseId(card) === "defuse")).toBe(true);
+
+    const devilPending = playCard({
+      state: afterGodcat,
+      playerId: "p1",
+      cardInstanceId: "devilcat#d1",
+      targetPlayerId: "p2",
+      now: 16000,
+    });
+    const afterDevil = resolvePendingAction(devilPending, 22000);
+    expect(afterDevil.players[1].hand.length).toBe(targetInitialHand - 1);
+
+    afterDevil.currentPlayerIndex = 0;
+    const potluckPending = playCard({ state: afterDevil, playerId: "p1", cardInstanceId: "potluck#p1", now: 23000 });
+    const afterPotluck = resolvePendingAction(potluckPending, 29000);
+    expect(afterPotluck.drawPile.length).toBeGreaterThan(afterDevil.drawPile.length);
+  });
+
+  it("handles dead-player and public-reveal expansion cards", () => {
+    const state = startedGame(players.slice(0, 3));
+    state.players[0].hand.push(
+      "feed-the-dead#f1",
+      "grave-robber#g1",
+      "reveal-the-future-3x#r1",
+      "raising-heck#h1",
+      "armageddon#a1",
+    );
+    state.players[1].hand.push("godcat#safe");
+    state.players[2].alive = false;
+    state.players[2].hand = ["skip#dead"];
+    state.drawPile = ["normal#1", "exploding-kitten#2", "normal#3", "normal#4"];
+
+    const feedPending = playCard({ state, playerId: "p1", cardInstanceId: "feed-the-dead#f1", now: 1000 });
+    const afterFeed = resolvePendingAction(feedPending, 7000);
+    expect(afterFeed.players[2].hand.length).toBeGreaterThan(1);
+    afterFeed.currentPlayerIndex = 0;
+
+    const gravePending = playCard({ state: afterFeed, playerId: "p1", cardInstanceId: "grave-robber#g1", now: 8000 });
+    const afterGrave = resolvePendingAction(gravePending, 14000);
+    expect(afterGrave.drawPile.length).toBeGreaterThan(afterFeed.drawPile.length);
+    afterGrave.currentPlayerIndex = 0;
+
+    const revealPending = playCard({ state: afterGrave, playerId: "p1", cardInstanceId: "reveal-the-future-3x#r1", now: 15000 });
+    const afterReveal = resolvePendingAction(revealPending, 21000);
+    expect(toClientGameState(afterReveal, "p1").insight?.cards).toHaveLength(3);
+    expect(toClientGameState(afterReveal, "p2").insight?.cards).toHaveLength(3);
+    afterReveal.currentPlayerIndex = 0;
+
+    const heckPending = playCard({ state: afterReveal, playerId: "p1", cardInstanceId: "raising-heck#h1", now: 22000 });
+    const afterHeck = resolvePendingAction(heckPending, 28000);
+    expect(getCardBaseId(afterHeck.drawPile[0])).toBe("exploding-kitten");
+    afterHeck.currentPlayerIndex = 0;
+
+    const armageddonPending = playCard({
+      state: afterHeck,
+      playerId: "p1",
+      cardInstanceId: "armageddon#a1",
+      targetPlayerId: "p2",
+      now: 29000,
+    });
+    const afterArmageddon = resolvePendingAction(armageddonPending, 35000);
+    expect(afterArmageddon.players.some((player) => !player.alive) || afterArmageddon.discardPile.includes("godcat#safe")).toBe(true);
+  });
+  it("resolves older expansion utility cards without leaving prompt-only actions", () => {
+    const state = startedGame(players.slice(0, 2));
+    state.players[0].hand.push(
+      "favor#f1",
+      "mark#m1",
+      "curse-of-cat-butt#c1",
+      "barking-kitten#b1",
+      "tower-of-power#t1",
+      "ill-take-that#i1",
+    );
+    state.drawPile.push("skip#future");
+    const initialTargetHand = state.players[1].hand.length;
+
+    const favorPending = playCard({ state, playerId: "p1", cardInstanceId: "favor#f1", targetPlayerId: "p2", now: 1000 });
+    const afterFavor = resolvePendingAction(favorPending, 7000);
+    expect(afterFavor.players[0].hand.length).toBeGreaterThan(state.players[0].hand.length - 1);
+    expect(afterFavor.players[1].hand.length).toBe(initialTargetHand - 1);
+    afterFavor.currentPlayerIndex = 0;
+
+    const markPending = playCard({ state: afterFavor, playerId: "p1", cardInstanceId: "mark#m1", targetPlayerId: "p2", now: 8000 });
+    const afterMark = resolvePendingAction(markPending, 14000);
+    expect(toClientGameState(afterMark, "p1").insight?.title).toContain("Marked");
+    afterMark.currentPlayerIndex = 0;
+
+    const cursePending = playCard({ state: afterMark, playerId: "p1", cardInstanceId: "curse-of-cat-butt#c1", targetPlayerId: "p2", now: 15000 });
+    const afterCurse = resolvePendingAction(cursePending, 21000);
+    expect(toClientGameState(afterCurse, "p2").insight?.title).toBe("Curse of Cat Butt");
+    afterCurse.currentPlayerIndex = 0;
+
+    const beforeBarkActorHand = afterCurse.players[0].hand.length;
+    const barkPending = playCard({ state: afterCurse, playerId: "p1", cardInstanceId: "barking-kitten#b1", targetPlayerId: "p2", now: 22000 });
+    const afterBark = resolvePendingAction(barkPending, 28000);
+    expect(afterBark.players[0].hand.length).toBeGreaterThanOrEqual(beforeBarkActorHand);
+    afterBark.currentPlayerIndex = 0;
+
+    const towerPending = playCard({ state: afterBark, playerId: "p1", cardInstanceId: "tower-of-power#t1", now: 29000 });
+    const afterTower = resolvePendingAction(towerPending, 35000);
+    expect(afterTower.players[0].hand.some((card) => card.startsWith("nope#tower-"))).toBe(true);
+    afterTower.currentPlayerIndex = 0;
+
+    const takePending = playCard({ state: afterTower, playerId: "p1", cardInstanceId: "ill-take-that#i1", targetPlayerId: "p2", now: 36000 });
+    const afterTake = resolvePendingAction(takePending, 42000);
+    expect(afterTake.players[0].hand).toContain("skip#future");
+  });
+
 });
