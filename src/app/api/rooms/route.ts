@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from "next/server";
 import type { CardExpansion } from "@/data/cardsData";
 import { initializeGame, toClientGameState } from "@/game-engine";
+import { createRoomSchema, defaultExpansions, jsonError, parseJson, validationError } from "@/server/apiValidation";
 import { hashRoomPassword } from "@/server/password";
 import { RedisService } from "@/server/redisService";
 import type { RoomSettings } from "@/server/roomTypes";
@@ -27,20 +28,12 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const body = (await request.json()) as {
-    roomId?: string;
-    roomName?: string;
-    playerId?: string;
-    playerName?: string;
-    maxPlayers?: number;
-    targetDeckSize?: number;
-    password?: string;
-    expansions?: CardExpansion[];
-  };
+  const payload = createRoomSchema.safeParse(await parseJson(request));
+  if (!payload.success) return validationError(payload.error);
 
+  const body = payload.data;
   const id = cleanRoomId(body.roomId || Math.random().toString(36).slice(2, 8));
   if (!id) return NextResponse.json({ error: "roomId is required" }, { status: 400 });
-  if (!body.playerId) return NextResponse.json({ error: "playerId is required" }, { status: 400 });
 
   try {
     const result = await redis.withLock(id, async () => {
@@ -59,7 +52,7 @@ export async function POST(request: NextRequest) {
       ];
       const expansions = body.expansions?.length
         ? body.expansions
-        : (["BASE", "IMPLODING", "STREAKING", "BARKING", "ZOMBIE", "GOOD_VS_EVIL"] satisfies CardExpansion[]);
+        : ([...defaultExpansions] satisfies CardExpansion[]);
       const state = initializeGame({ id, players, expansions, targetDeckSize });
       state.ownerPlayerId = body.playerId!;
       state.players.forEach((player, index) => {
@@ -87,9 +80,6 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ roomId: id, game: result });
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 400 },
-    );
+    return jsonError(error);
   }
 }

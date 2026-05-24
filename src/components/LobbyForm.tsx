@@ -133,9 +133,6 @@ export function LobbyForm() {
     };
     window.addEventListener("focus", onFocus);
     return () => {
-      window.setInterval(() => {
-        // Just dummy cleanup to match effect
-      });
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };

@@ -203,6 +203,7 @@ function RoomPageContent() {
   const [error, setError] = useState<string>();
   const [isBusy, setIsBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [selectedCatCards, setSelectedCatCards] = useState<string[]>([]);
   const [alterOrder, setAlterOrder] = useState<string[]>([]);
   const [alterPickIdx, setAlterPickIdx] = useState<number | null>(null);
@@ -241,7 +242,7 @@ function RoomPageContent() {
   }, [searchParams]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -331,6 +332,7 @@ function RoomPageContent() {
 
   useEffect(() => {
     if (playerId === "p-local") return;
+    const pollMs = realtimeConnected ? 15000 : 2000;
     const poll = window.setInterval(() => {
       getState(roomId, playerId)
         .then(setState)
@@ -338,9 +340,9 @@ function RoomPageContent() {
           const message = pollError instanceof Error ? pollError.message : "";
           if (/busy|đang xử lý|thử lại/i.test(message)) return;
         });
-    }, 2000);
+    }, pollMs);
     return () => window.clearInterval(poll);
-  }, [playerId, roomId]);
+  }, [playerId, realtimeConnected, roomId]);
 
   useEffect(() => {
     if (playerId === "p-local") return;
@@ -374,6 +376,10 @@ function RoomPageContent() {
 
     const pusher = new Pusher(key, { cluster });
     const channel = pusher.subscribe(`game-${roomId}`);
+    pusher.connection.bind("connected", () => setRealtimeConnected(true));
+    pusher.connection.bind("disconnected", () => setRealtimeConnected(false));
+    pusher.connection.bind("failed", () => setRealtimeConnected(false));
+    pusher.connection.bind("unavailable", () => setRealtimeConnected(false));
     channel.bind("gameState:update", () => {
       getState(roomId, playerId).then(setState).catch((stateError) => {
         const message = stateError instanceof Error ? stateError.message : "";
@@ -381,6 +387,7 @@ function RoomPageContent() {
       });
     });
     return () => {
+      setRealtimeConnected(false);
       channel.unbind_all();
       pusher.unsubscribe(`game-${roomId}`);
       pusher.disconnect();
@@ -426,6 +433,7 @@ function RoomPageContent() {
     ? state.insight
     : undefined;
   const insightSeconds = visibleInsight ? Math.max(0, Math.ceil(((insightDismissAt ?? visibleInsight.expiresAt) - now) / 1000)) : 0;
+  const recentLog = useMemo(() => compactLog(state?.log ?? []).slice(-6), [state?.log]);
 
   const mustConfirmAlter = Boolean(state?.pendingDrawAlter);
   const mustConfirmShare = Boolean(state?.pendingShareFuture?.reorderDrawTop?.length);
@@ -486,21 +494,6 @@ function RoomPageContent() {
   useEffect(() => {
     if (!state?.pendingDefuseExplosion) setDefuseInsertStr("");
   }, [state?.pendingDefuseExplosion, state?.updatedAt]);
-
-  useEffect(() => {
-    if (playerId === "p-local" || !roomId) return;
-    const sendLeave = () => {
-      const payload = JSON.stringify({ action: "leave", playerId });
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(`/api/games/${roomId}`, new Blob([payload], { type: "application/json" }));
-      }
-    };
-    window.addEventListener("beforeunload", sendLeave);
-    return () => {
-      window.removeEventListener("beforeunload", sendLeave);
-      sendLeave();
-    };
-  }, [playerId, roomId]);
 
   useEffect(() => {
     if (aliveTargets.length > 0 && !aliveTargets.some((player) => player.id === targetPlayerId)) {
@@ -1486,7 +1479,7 @@ function RoomPageContent() {
                 Nhật ký gần đây
               </summary>
               <div className="mt-1 grid max-h-20 gap-1 overflow-y-auto sm:grid-cols-2">
-                {compactLog(state?.log ?? []).slice(-6).map((line, index) => (
+                {recentLog.map((line, index) => (
                   <p key={`${line}-${index}`} className="truncate">{line}</p>
                 ))}
               </div>

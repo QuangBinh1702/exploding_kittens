@@ -16,10 +16,19 @@ Nếu chưa cấu hình Upstash Redis hoặc Pusher, app tự dùng in-memory fa
 ## Test trước khi deploy
 
 ```powershell
-npm run test
+npm run lint
 npm run typecheck
+npm run test
 npm run build
 ```
+
+## Checklist production trên Vercel
+
+- Cấu hình đủ biến môi trường cho cả Preview và Production: `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `PUSHER_APP_ID`, `PUSHER_SECRET`, `NEXT_PUBLIC_PUSHER_KEY`, `NEXT_PUBLIC_PUSHER_CLUSTER`.
+- Không để production chạy bằng in-memory fallback; app sẽ báo lỗi nếu thiếu Redis/Pusher env khi chạy production.
+- Kiểm tra response headers bảo mật trên `/` và `/api/rooms` sau khi deploy.
+- Smoke test luồng chính: tạo phòng public/private, vào phòng bằng mật khẩu đúng/sai, start game, draw/play/nope, đóng tab và vào lại phòng.
+- Xác nhận Upstash lock và Pusher realtime hoạt động trên Vercel; polling chỉ là fallback khi realtime không khả dụng.
 
 ## Kiến trúc chính
 

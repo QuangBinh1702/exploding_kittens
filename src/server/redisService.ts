@@ -1,15 +1,15 @@
 import { Redis } from "@upstash/redis";
 import type { ServerGameState } from "@/game-engine";
+import { getRedisEnv } from "./env";
 import type { PublicRoomSummary, RoomSettings } from "./roomTypes";
 
 const memoryStore = new Map<string, string>();
 const memoryLocks = new Map<string, number>();
 
 function redisClient() {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) return undefined;
-  return new Redis({ url, token });
+  const env = getRedisEnv();
+  if (!env) return undefined;
+  return new Redis(env);
 }
 
 export class RedisService {

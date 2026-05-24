@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useMemo, useState } from "react";
 import { CardDetailModal } from "@/components/CardDetailModal";
 import { CardView } from "@/components/CardView";
@@ -49,7 +50,7 @@ export default function HomeContent() {
               }}
             />
             <div className="flex items-center gap-4 mb-4">
-              <img src="/assets/logo.png" alt="Mèo Nổ Logo" className="h-16 w-16 object-contain shrink-0 drop-shadow-[0_4px_6px_rgba(0,0,0,0.15)]" />
+              <Image src="/assets/logo.png" alt="Mèo Nổ Logo" width={64} height={64} priority className="h-16 w-16 shrink-0 object-contain drop-shadow-[0_4px_6px_rgba(0,0,0,0.15)]" />
               <div>
                 <p className="animate-fade-up delay-[40ms] text-xs font-bold uppercase tracking-[0.28em] text-felt">
                   Exploding Kittens Online
@@ -97,10 +98,12 @@ export default function HomeContent() {
               <div className="my-6 relative group">
                 {/* Glow effect using theme cherry-glow */}
                 <div className="absolute -inset-1.5 rounded-full bg-cherry-glow/30 blur-xl group-hover:opacity-75 transition duration-500 animate-pulse" />
-                <img 
-                  src="/assets/logo.png" 
-                  alt="Mèo Nổ Logo" 
-                  className="relative h-32 w-32 object-contain transition duration-500 transform hover:scale-105 hover:rotate-3" 
+                <Image
+                  src="/assets/logo.png"
+                  alt="Mèo Nổ Logo"
+                  width={128}
+                  height={128}
+                  className="relative h-32 w-32 transform object-contain transition duration-500 hover:scale-105 hover:rotate-3"
                 />
               </div>
 

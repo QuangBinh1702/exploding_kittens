@@ -23,7 +23,8 @@ import {
   type ClientGameState,
 } from "@/game-engine";
 import type { CardExpansion } from "@/data/cardsData";
-import { hashRoomPassword, verifyRoomPassword } from "@/server/password";
+import { defaultExpansions, gameActionSchema, jsonError, parseJson, validationError } from "@/server/apiValidation";
+import { hashRoomPassword, isLegacyRoomPasswordHash, verifyRoomPassword } from "@/server/password";
 import { PusherService } from "@/server/pusherService";
 import { RedisService } from "@/server/redisService";
 import type { RoomSettings } from "@/server/roomTypes";
@@ -74,10 +75,7 @@ export async function GET(
     const settings = await redis.getRoomSettings(id);
     return NextResponse.json(withRoomName(clientState, settings));
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 400 },
-    );
+    return jsonError(error);
   }
 }
 
@@ -86,40 +84,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const body = (await request.json()) as {
-    action:
-      | "create"
-      | "join"
-      | "start"
-      | "draw"
-      | "play"
-      | "catCombo"
-      | "nope"
-      | "resolve"
-      | "confirmAlterOrder"
-      | "confirmBury"
-      | "confirmShuffle"
-      | "confirmShareFuture"
-      | "confirmDefuseExplosion"
-      | "confirmCatSteal"
-      | "shuffleMyHand"
-      | "leave";
-    players?: Array<{ id: string; name: string }>;
-    playerId?: string;
-    playerName?: string;
-    cardInstanceId?: string;
-    cardInstanceIds?: string[];
-    orderedInstanceIds?: string[];
-    insertIndex?: number;
-    stolenCardInstanceId?: string;
-    targetPlayerId?: string;
-    expansions?: CardExpansion[];
-    forceNew?: boolean;
-    maxPlayers?: number;
-    targetDeckSize?: number;
-    roomName?: string;
-    password?: string;
-  };
+  const payload = gameActionSchema.safeParse(await parseJson(request));
+  if (!payload.success) return validationError(payload.error);
+  const body = payload.data;
 
   try {
     let roomDeleted = false;
@@ -137,7 +104,7 @@ export async function POST(
         const targetDeckSize = Math.min(120, Math.max(minimumDeckSize, Math.floor(body.targetDeckSize ?? 19 + maxPlayers * 5)));
         const expansions = body.expansions?.length
           ? body.expansions
-          : (["BASE", "IMPLODING", "STREAKING", "BARKING", "ZOMBIE", "GOOD_VS_EVIL"] satisfies CardExpansion[]);
+          : ([...defaultExpansions] satisfies CardExpansion[]);
         const state = initializeGame({
           id,
           players: body.players ?? fallbackPlayers(creatorId, creatorName, maxPlayers),
@@ -175,8 +142,14 @@ export async function POST(
 
       if (body.action === "join") {
         if (!body.playerId) throw new Error("playerId is required");
+        const shouldRehashPassword = Boolean(
+          settings?.passwordHash && body.password && isLegacyRoomPasswordHash(settings.passwordHash),
+        );
         if (!verifyRoomPassword(body.password, settings?.passwordHash)) {
           throw new Error("Mật khẩu phòng không đúng.");
+        }
+        if (shouldRehashPassword && settings && body.password) {
+          settings.passwordHash = hashRoomPassword(body.password.trim());
         }
         next = joinGame(next, body.playerId, body.playerName ?? body.playerId);
       } else if (body.action === "leave") {
@@ -288,9 +261,6 @@ export async function POST(
     const settingsAfter = await redis.getRoomSettings(id);
     return NextResponse.json(withRoomName(result, settingsAfter));
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 400 },
-    );
+    return jsonError(error);
   }
 }

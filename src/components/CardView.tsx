@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { getCardData, type CardType } from "@/data/cardsData";
 
 export interface CardViewProps {
@@ -159,13 +160,12 @@ export function CardView({ cardId, className = "", density = "normal", faceDown 
         <div className="relative flex flex-1 items-center justify-center overflow-hidden px-3 py-2">
           <div className="absolute inset-2 rounded-full border-4 border-dotted border-black/10" />
           <div className="relative z-10 flex h-full w-full items-center justify-center overflow-hidden rounded-xl bg-white/25">
-            <img
+            <Image
               src={imagePath}
               alt=""
-              className={`h-full w-full object-contain object-center p-1 drop-shadow-[0_8px_10px_rgba(0,0,0,0.22)] transition duration-300 group-hover:scale-[1.03] ${densityStyle.image}`}
-              onError={(event) => {
-                event.currentTarget.style.display = "none";
-              }}
+              fill
+              sizes={density === "normal" ? "(min-width: 1280px) 25vw, (min-width: 640px) 50vw, 100vw" : "160px"}
+              className={`object-contain object-center p-1 drop-shadow-[0_8px_10px_rgba(0,0,0,0.22)] transition duration-300 group-hover:scale-[1.03] ${densityStyle.image}`}
             />
           </div>
         </div>
