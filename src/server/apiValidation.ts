@@ -54,6 +54,7 @@ const baseGameActionSchema = z.object({
     "confirmCatSteal",
     "shuffleMyHand",
     "leave",
+    "heartbeat",
   ]),
   players: z.array(z.object({ id: idSchema, name: nameSchema })).min(1).max(8).optional(),
   playerId: idSchema.optional(),
@@ -79,7 +80,7 @@ export const gameActionSchema = baseGameActionSchema.superRefine((body, ctx) => 
     }
   };
 
-  if (["join", "start", "draw", "confirmShuffle", "shuffleMyHand", "leave"].includes(body.action)) {
+  if (["join", "start", "draw", "confirmShuffle", "shuffleMyHand", "leave", "heartbeat"].includes(body.action)) {
     requireField("playerId");
   }
   if (["play", "nope"].includes(body.action)) {

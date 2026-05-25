@@ -221,6 +221,7 @@ function RoomPageContent() {
   const [insightDismissAt, setInsightDismissAt] = useState<number | null>(null);
   const [defuseModalDismissed, setDefuseModalDismissed] = useState(false);
   const [detailCardId, setDetailCardId] = useState<string | null>(null);
+  const leaveSentRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -265,6 +266,14 @@ function RoomPageContent() {
     },
     [roomId, router],
   );
+
+  const sendHeartbeat = useCallback(() => {
+    fetch(`/api/games/${roomId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "heartbeat", playerId }),
+    }).catch(() => undefined);
+  }, [playerId, roomId]);
 
   const handleDeckDraw = useCallback(() => {
     setDeckAnim("fromTop");
@@ -346,24 +355,39 @@ function RoomPageContent() {
 
   useEffect(() => {
     if (playerId === "p-local") return;
+    const firstHeartbeat = window.setTimeout(sendHeartbeat, 5000);
+    const heartbeat = window.setInterval(sendHeartbeat, 20000);
+    return () => {
+      window.clearTimeout(firstHeartbeat);
+      window.clearInterval(heartbeat);
+    };
+  }, [playerId, sendHeartbeat]);
+
+  useEffect(() => {
+    if (playerId === "p-local") return;
+    leaveSentRef.current = false;
 
     const handleLeave = () => {
-      const url = `/api/games/${roomId}`;
+      if (leaveSentRef.current) return;
+      leaveSentRef.current = true;
       const payload = JSON.stringify({ action: "leave", playerId });
+      const url = `/api/games/${roomId}`;
       if (typeof navigator !== "undefined" && navigator.sendBeacon) {
         navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
-      } else {
-        fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: payload,
-          keepalive: true,
-        });
+        return;
       }
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+        keepalive: true,
+      }).catch(() => undefined);
     };
 
+    window.addEventListener("pagehide", handleLeave);
     window.addEventListener("beforeunload", handleLeave);
     return () => {
+      window.removeEventListener("pagehide", handleLeave);
       window.removeEventListener("beforeunload", handleLeave);
       handleLeave();
     };

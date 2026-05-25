@@ -5,6 +5,7 @@ import type { PublicRoomSummary, RoomSettings } from "./roomTypes";
 
 const memoryStore = new Map<string, string>();
 const memoryLocks = new Map<string, number>();
+const ROOM_PRESENCE_TIMEOUT_MS = 45_000;
 
 function redisClient() {
   const env = getRedisEnv();
@@ -53,6 +54,15 @@ export class RedisService {
     await this.redis.sadd("room-index", settings.id);
   }
 
+  async touchPlayerPresence(gameId: string, playerId: string, now = Date.now()) {
+    const state = await this.getGame(gameId);
+    const player = state?.players.find((candidate) => candidate.id === playerId);
+    if (!state || !player || !player.connected) return;
+    player.lastSeenAt = now;
+    state.updatedAt = now;
+    await this.setGame(state);
+  }
+
   async deleteRoom(gameId: string) {
     const gameKey = `game:${gameId}`;
     const settingsKey = `room:${gameId}:settings`;
@@ -67,7 +77,7 @@ export class RedisService {
     await this.redis.srem("room-index", gameId);
   }
 
-  async listPublicRooms(): Promise<PublicRoomSummary[]> {
+  async listPublicRooms(now = Date.now()): Promise<PublicRoomSummary[]> {
     const roomIds = this.redis
       ? await this.redis.smembers<string[]>("room-index")
       : [...memoryStore.keys()]
@@ -82,7 +92,9 @@ export class RedisService {
           await this.deleteRoom(id);
           return undefined;
         }
-        const connectedPlayers = game.players.filter((player) => player.connected);
+        const connectedPlayers = game.players.filter(
+          (player) => player.connected && now - (player.lastSeenAt ?? game.updatedAt) <= ROOM_PRESENCE_TIMEOUT_MS,
+        );
         if (connectedPlayers.length === 0) {
           await this.deleteRoom(id);
           return undefined;

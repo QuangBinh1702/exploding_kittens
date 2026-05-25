@@ -55,11 +55,11 @@ export async function POST(request: NextRequest) {
         : ([...defaultExpansions] satisfies CardExpansion[]);
       const state = initializeGame({ id, players, expansions, targetDeckSize });
       state.ownerPlayerId = body.playerId!;
+      const now = Date.now();
       state.players.forEach((player, index) => {
         player.connected = index === 0;
+        player.lastSeenAt = index === 0 ? now : undefined;
       });
-
-      const now = Date.now();
       const settings: RoomSettings = {
         id,
         name: body.roomName?.trim() || `Room ${id}`,

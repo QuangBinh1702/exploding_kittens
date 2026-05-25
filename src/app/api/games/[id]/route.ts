@@ -112,11 +112,12 @@ export async function POST(
           targetDeckSize,
         });
         state.ownerPlayerId = creatorId;
+        const now = Date.now();
         state.players.forEach((player, index) => {
           player.connected = index === 0;
+          player.lastSeenAt = index === 0 ? now : undefined;
         });
-
-        const now = Date.now();
+        state.players[0].lastSeenAt = now;
         const settings: RoomSettings = {
           id,
           name: body.roomName?.trim() || `Room ${id}`,
@@ -152,6 +153,11 @@ export async function POST(
           settings.passwordHash = hashRoomPassword(body.password.trim());
         }
         next = joinGame(next, body.playerId, body.playerName ?? body.playerId);
+        next.players.find((player) => player.id === body.playerId)!.lastSeenAt = Date.now();
+      } else if (body.action === "heartbeat") {
+        if (!body.playerId) throw new Error("playerId is required");
+        const player = next.players.find((candidate) => candidate.id === body.playerId && candidate.connected);
+        if (player) player.lastSeenAt = Date.now();
       } else if (body.action === "leave") {
         if (!body.playerId) throw new Error("playerId is required");
         const ownerId = settings?.ownerPlayerId ?? next.players[0]?.id;

@@ -10,6 +10,7 @@ export interface PlayerState {
   hand: string[];
   alive: boolean;
   connected: boolean;
+  lastSeenAt?: number;
 }
 
 export interface PublicPlayerState {
