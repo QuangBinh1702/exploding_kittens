@@ -39,12 +39,28 @@ if (!metadata.width || !metadata.height) {
 
 const columns = Math.ceil(Math.sqrt(ids.length));
 const rows = Math.ceil(ids.length / columns);
-const cellWidth = Math.floor(metadata.width / columns);
-const cellHeight = Math.floor(metadata.height / rows);
-const insetX = Math.max(0, Math.floor(cellWidth * 0.035));
-const insetY = Math.max(0, Math.floor(cellHeight * 0.035));
-const cropWidth = cellWidth - insetX * 2;
-const cropHeight = cellHeight - insetY * 2;
+const defaultTrim = { top: 0, right: 0, bottom: 0, left: 0 };
+const edgeTrims = {
+  potluck: { right: 14 },
+  "shuffle-now": { right: 8 },
+  armageddon: { right: 8 },
+  godcat: { right: 8 },
+  devilcat: { right: 8 },
+  "raising-heck": { right: 8 },
+  "reveal-the-future-3x": { right: 8 },
+};
+const gridX = [0, 160, 320, 480, 640, 800, 960, metadata.width];
+const gridY = [0, 160, 320, 480, 640, 800, 948, metadata.height];
+
+if (metadata.width !== 1120 || metadata.height !== 1120) {
+  console.error(`This sheet crop map expects a 1120x1120 generated card sheet, got ${metadata.width}x${metadata.height}.`);
+  process.exit(1);
+}
+
+if (gridX.length !== columns + 1 || gridY.length !== rows + 1) {
+  console.error("Grid boundary map does not match the expected card grid.");
+  process.exit(1);
+}
 
 if (ids.length !== columns * rows) {
   console.error(`Expected ${columns * rows} cards, found ${ids.length}.`);
@@ -53,15 +69,24 @@ if (ids.length !== columns * rows) {
 
 await Promise.all(
   ids.map((id, index) => {
-    const left = (index % columns) * cellWidth;
-    const top = Math.floor(index / columns) * cellHeight;
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const left = gridX[column];
+    const top = gridY[row];
+    const right = gridX[column + 1];
+    const bottom = gridY[row + 1];
+    const trim = { ...defaultTrim, ...edgeTrims[id] };
+    const extractLeft = left + trim.left;
+    const extractTop = top + trim.top;
+    const extractWidth = right - left - trim.left - trim.right;
+    const extractHeight = bottom - top - trim.top - trim.bottom;
     return sharp(sheetPath)
-      .extract({ left: left + insetX, top: top + insetY, width: cropWidth, height: cropHeight })
-      .resize(1024, 1024, { fit: "cover", kernel: "lanczos3" })
-      .webp({ quality: 96 })
+      .extract({ left: extractLeft, top: extractTop, width: extractWidth, height: extractHeight })
+      .resize(1024, 1024, { fit: "contain", background: "#f5ecd6", kernel: "lanczos3" })
+      .webp({ quality: 98 })
       .toFile(path.join(outputDir, `${id}.webp`));
   }),
 );
 
-console.log(`Cropped ${ids.length} generated card assets into ${outputDir}`);
+console.log(`Cropped ${ids.length} generated card assets by exact ${columns}x${rows} grid cells into ${outputDir}`);
 console.log(`Original placeholder assets backed up in ${backupDir}`);

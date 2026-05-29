@@ -66,7 +66,7 @@ const densityClass = {
     article: "min-h-[360px]",
     header: "px-4 py-3",
     title: "text-2xl",
-    image: "max-h-44",
+    image: "h-44 w-44",
     body: "px-4 py-4 text-sm",
     descLines: "line-clamp-3",
   },
@@ -74,7 +74,7 @@ const densityClass = {
     article: "min-h-[220px]",
     header: "px-3 py-2",
     title: "text-base",
-    image: "max-h-24",
+    image: "h-24 w-24",
     body: "px-3 py-2 text-xs",
     descLines: "line-clamp-3",
   },
@@ -82,7 +82,7 @@ const densityClass = {
     article: "min-h-[150px]",
     header: "px-2 py-1.5",
     title: "text-[13px] leading-tight",
-    image: "max-h-14",
+    image: "h-14 w-14",
     body: "px-2 py-1 text-[10px] leading-snug",
     descLines: "line-clamp-2",
   },
@@ -158,12 +158,13 @@ export function CardView({ cardId, className = "", density = "normal", faceDown 
         </div>
 
         <div className="relative flex flex-1 items-center justify-center overflow-hidden px-3 py-2">
-          <div className="absolute inset-2 rounded-full border-4 border-dotted border-black/10" />
-          <div className="relative z-10 flex h-full w-full items-center justify-center overflow-hidden rounded-xl bg-white/25">
+          <div className="absolute left-1/2 top-1/2 aspect-square w-[88%] -translate-x-1/2 -translate-y-1/2 rounded-full border-4 border-dotted border-black/10" />
+          <div className="relative z-10 flex h-full w-full items-center justify-center overflow-visible rounded-xl bg-white/25">
             <Image
               src={imagePath}
               alt=""
-              fill
+              width={1024}
+              height={1024}
               sizes={density === "normal" ? "(min-width: 1280px) 25vw, (min-width: 640px) 50vw, 100vw" : "160px"}
               className={`object-contain object-center p-1 drop-shadow-[0_8px_10px_rgba(0,0,0,0.22)] transition duration-300 group-hover:scale-[1.03] ${densityStyle.image}`}
             />

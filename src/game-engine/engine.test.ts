@@ -3,6 +3,8 @@ import {
   completeCatSteal,
   completeDefuseExplosion,
   completeDrawAlter,
+  completeFavorSelection,
+  completeShareFuturePhase,
   completeShuffle,
   drawCard,
   getCardBaseId,
@@ -175,6 +177,14 @@ describe("game engine", () => {
     expect(resolved.log.at(-1)).toContain("bị hủy");
   });
 
+  it("does not allow the action player to Nope their own card and uses a 6s Nope window", () => {
+    const state = startedGame(players.slice(0, 2));
+    state.players[0].hand.push("skip#self-nope", "nope#self");
+
+    const pending = playCard({ state, playerId: "p1", cardInstanceId: "skip#self-nope", now: 1000 });
+    expect(pending.pendingAction?.expiresAt).toBe(7000);
+    expect(() => playNope(pending, "p1", "nope#self", 1500)).toThrow(/cannot Nope their own card/i);
+  });
   it("queues shuffle after Nope window until the player confirms", () => {
     const state = startedGame(players.slice(0, 2));
     const drawOrderBefore = [...state.drawPile];
@@ -280,6 +290,25 @@ describe("game engine", () => {
     expect(reordered.pendingDrawAlter).toBeUndefined();
   });
 
+  it("lets only the Share the Future actor reorder while the shared player only sees", () => {
+    const state = startedGame(players.slice(0, 2));
+    state.drawPile = ["a#1", "b#2", "c#3", "d#4"];
+    state.players[0].hand.push("share-the-future#manual");
+
+    const pending = playCard({ state, playerId: "p1", cardInstanceId: "share-the-future#manual", now: 1000 });
+    const resolved = resolvePendingAction(pending, 7000);
+    expect(resolved.pendingShareFuture?.actorId).toBe("p1");
+    expect(toClientGameState(resolved, "p2").pendingShareFuture?.reorderDrawTop).toBeUndefined();
+
+    const completed = completeShareFuturePhase({
+      state: resolved,
+      playerId: "p1",
+      orderedInstanceIds: ["b#2", "d#4", "c#3"],
+    });
+    expect(completed.drawPile).toEqual(["a#1", "c#3", "d#4", "b#2"]);
+    expect(completed.pendingShareFuture).toBeUndefined();
+    expect(toClientGameState(completed, "p2").insight?.cards).toEqual(["b", "d", "c"]);
+  });
   it("does not auto-draw when Alter reorder is still pending", () => {
     const state = startedGame(players.slice(0, 2));
     state.drawPile = ["a#1", "b#2", "c#3", "d#4"];
@@ -436,8 +465,11 @@ describe("game engine", () => {
     const initialTargetHand = state.players[1].hand.length;
 
     const favorPending = playCard({ state, playerId: "p1", cardInstanceId: "favor#f1", targetPlayerId: "p2", now: 1000 });
-    const afterFavor = resolvePendingAction(favorPending, 7000);
-    expect(afterFavor.players[0].hand.length).toBeGreaterThan(state.players[0].hand.length - 1);
+    const favorNeedsChoice = resolvePendingAction(favorPending, 7000);
+    expect(favorNeedsChoice.pendingFavorSelection).toEqual({ actorId: "p1", targetPlayerId: "p2" });
+    const chosenFavorCard = favorNeedsChoice.players[1].hand.at(-1)!;
+    const afterFavor = completeFavorSelection({ state: favorNeedsChoice, playerId: "p2", cardInstanceId: chosenFavorCard, now: 7100 });
+    expect(afterFavor.players[0].hand).toContain(chosenFavorCard);
     expect(afterFavor.players[1].hand.length).toBe(initialTargetHand - 1);
     afterFavor.currentPlayerIndex = 0;
 

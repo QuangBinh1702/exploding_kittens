@@ -5,6 +5,7 @@ import {
   completeBury,
   completeDefuseExplosion,
   completeDrawAlter,
+  completeFavorSelection,
   completeShareFuturePhase,
   completeShuffle,
   completeCatSteal,
@@ -247,6 +248,15 @@ export async function POST(
           state: next,
           playerId: body.playerId,
           stolenCardInstanceId: body.stolenCardInstanceId,
+        });
+      } else if (body.action === "confirmFavorSelection") {
+        if (!body.playerId || !body.cardInstanceId) {
+          throw new Error("playerId and cardInstanceId are required");
+        }
+        next = completeFavorSelection({
+          state: next,
+          playerId: body.playerId,
+          cardInstanceId: body.cardInstanceId,
         });
       } else if (body.action === "shuffleMyHand") {
         if (!body.playerId) throw new Error("playerId is required");

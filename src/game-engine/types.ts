@@ -77,6 +77,8 @@ export interface ServerGameState {
   pendingDefuseExplosion?: { playerId: PlayerId; explodingCardInstanceId: string };
   /** Two-cat combo played; stealer must choose one card from target's hand. */
   pendingCatSteal?: { playerId: PlayerId; targetPlayerId: PlayerId };
+  /** Favor: target chooses which card to give to the player who used Favor. */
+  pendingFavorSelection?: { actorId: PlayerId; targetPlayerId: PlayerId };
   lastExplosion?: { playerId: PlayerId; playerName: string; cardId: string; eliminated: boolean; at: number };
   expansions: CardExpansion[];
   log: string[];
@@ -124,6 +126,15 @@ export interface ClientGameState {
         type: "wait_pick";
         stealerName: string;
         cardCount: number;
+      };
+  pendingFavorSelection?:
+    | {
+        type: "choose";
+        requesterName: string;
+      }
+    | {
+        type: "wait_choose";
+        targetName: string;
       };
   lastExplosion?: { playerId: PlayerId; playerName: string; cardId: string; eliminated: boolean; at: number };
   log: string[];

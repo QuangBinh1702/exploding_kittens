@@ -111,7 +111,8 @@ function hasBlockingInteraction(state: ServerGameState): boolean {
       state.pendingShareFuture ||
       state.pendingShuffle ||
       state.pendingDefuseExplosion ||
-      state.pendingCatSteal,
+      state.pendingCatSteal ||
+      state.pendingFavorSelection,
   );
 }
 
@@ -284,6 +285,7 @@ export function drawCard(state: ServerGameState, playerId: PlayerId, fromBottom 
   if (next.pendingShuffle) throw new Error("Confirm the shuffle before drawing");
   if (next.pendingDefuseExplosion) throw new Error("Resolve Exploding Kitten with Defuse before drawing");
   if (next.pendingCatSteal) throw new Error("Chọn lá từ tay đối thủ trước khi rút bài");
+  if (next.pendingFavorSelection) throw new Error("Chờ người bị Favor chọn lá trước khi rút bài");
   const player = getPlayer(next, playerId);
   if (currentPlayer(next)?.id !== playerId) throw new Error("Not this player's turn");
   const card = fromBottom ? next.drawPile.shift() : next.drawPile.pop();
@@ -575,8 +577,7 @@ export function completeShareFuturePhase({
   const pending = next.pendingShareFuture;
   if (!pending) throw new Error("No Share the Future step is active");
 
-  const activeId = pending.phase === "actor" ? pending.actorId : pending.nextPlayerId;
-  if (activeId !== playerId) throw new Error("Not your turn to confirm Share the Future");
+  if (pending.actorId !== playerId) throw new Error("Only the player who used Share the Future can confirm the order");
   if (orderedInstanceIds.length !== pending.orderedInstanceIds.length) {
     throw new Error("Wrong number of cards");
   }
@@ -584,34 +585,21 @@ export function completeShareFuturePhase({
     throw new Error("Those cards do not match the Share the Future set");
   }
 
-  if (pending.phase === "actor") {
-    pending.phase = "next";
-    pending.orderedInstanceIds = [...orderedInstanceIds];
-    next.insights = next.insights.filter((i) => !(i.playerId === pending.actorId && i.reorderDrawTop));
-    const nextPlayer = getPlayer(next, pending.nextPlayerId);
-    addInsight(
-      next,
-      pending.nextPlayerId,
-      `Chia sẻ ${orderedInstanceIds.length} lá (người kế)`,
-      orderedInstanceIds.map(getCardBaseId),
-      `${getPlayer(next, pending.actorId).name} đã sắp xếp. Bạn có thể sắp lại trước khi trả các lá lên xấp rút.`,
-      [...orderedInstanceIds],
-    );
-    next.log.push(`${nextPlayer.name} xem các lá từ Chia Sẻ Tương Lai.`);
-  } else {
-    const tailBottomToTop = [...orderedInstanceIds].reverse();
-    next.drawPile.push(...tailBottomToTop);
-    next.pendingShareFuture = undefined;
-    next.insights = next.insights.filter(
-      (i) =>
-        !(
-          i.reorderDrawTop &&
-          (i.playerId === pending.actorId || i.playerId === pending.nextPlayerId) &&
-          i.title.includes("Chia sẻ")
-        ),
-    );
-    next.log.push("Chia Sẻ Tương Lai: các lá đã được trả lại lên đỉnh xấp rút.");
-  }
+  const tailBottomToTop = [...orderedInstanceIds].reverse();
+  next.drawPile.push(...tailBottomToTop);
+  next.pendingShareFuture = undefined;
+  next.insights = next.insights.filter((i) => !(i.playerId === pending.actorId && i.reorderDrawTop));
+
+  const actor = getPlayer(next, pending.actorId);
+  const nextPlayer = getPlayer(next, pending.nextPlayerId);
+  addInsight(
+    next,
+    pending.nextPlayerId,
+    `Chia sẻ ${orderedInstanceIds.length} lá`,
+    orderedInstanceIds.map(getCardBaseId),
+    `${actor.name} đã sắp xếp. Bạn chỉ được xem các lá này, không đổi vị trí.`,
+  );
+  next.log.push(`${actor.name} đã sắp xếp Chia Sẻ Tương Lai; ${nextPlayer.name} được xem các lá.`);
 
   next.updatedAt = now;
   return next;
@@ -829,6 +817,41 @@ export function shuffleVictimHand({
   return next;
 }
 
+export function completeFavorSelection({
+  state,
+  playerId,
+  cardInstanceId,
+  now = Date.now(),
+}: {
+  state: ServerGameState;
+  playerId: PlayerId;
+  cardInstanceId: string;
+  now?: number;
+}): ServerGameState {
+  const next = cloneState(state);
+  assertPlaying(next);
+  if (next.pendingAction) throw new Error("Cannot resolve Favor while waiting for Nope");
+  const pending = next.pendingFavorSelection;
+  if (!pending) throw new Error("No Favor selection is active");
+  if (pending.targetPlayerId !== playerId) throw new Error("Only the player targeted by Favor can choose the card");
+
+  const actor = getPlayer(next, pending.actorId);
+  const target = getPlayer(next, playerId);
+  const index = target.hand.indexOf(cardInstanceId);
+  if (index < 0) throw new Error("That card is not in your hand");
+
+  const [given] = target.hand.splice(index, 1);
+  actor.hand.push(given);
+  next.pendingFavorSelection = undefined;
+
+  addInsight(next, actor.id, "Favor", [getCardBaseId(given)], `${target.name} đưa cho bạn một lá.`);
+  addInsight(next, target.id, "Favor", [getCardBaseId(given)], `Bạn đã đưa một lá cho ${actor.name}.`);
+  next.log.push(`${target.name} đưa một lá cho ${actor.name} theo Favor.`);
+  nowWithTurn(next, now);
+  next.updatedAt = now;
+  return next;
+}
+
 function applyAction(state: ServerGameState, playerId: PlayerId, action: GameAction, now = Date.now()) {
   assertPlaying(state);
   const actor = getPlayer(state, playerId);
@@ -955,7 +978,7 @@ function applyAction(state: ServerGameState, playerId: PlayerId, action: GameAct
         playerId,
         `Chia sẻ ${count} lá (bạn)`,
         inDrawOrder.map(getCardBaseId),
-        "Sắp xếp thứ tự, xác nhận. Sau đó người kế tiếp cũng được xem và sắp lại trước khi trả lá lên xấp.",
+        "Sắp xếp thứ tự, xác nhận. Sau đó người kế tiếp chỉ được xem các lá này.",
         inDrawOrder,
       );
       state.log.push(`${actor.name} dùng Chia Sẻ Tương Lai (${count} lá).`);
@@ -967,11 +990,10 @@ function applyAction(state: ServerGameState, playerId: PlayerId, action: GameAct
         addInsight(state, playerId, "Favor", [], `${target.name} không có lá nào để đưa.`);
         break;
       }
-      const given = target.hand.shift()!;
-      actor.hand.push(given);
-      addInsight(state, playerId, "Favor", [getCardBaseId(given)], `${target.name} đưa cho bạn một lá.`);
-      addInsight(state, target.id, "Favor", [], `Bạn đưa một lá cho ${actor.name}.`);
-      state.log.push(`${actor.name} nhận một lá từ ${target.name}.`);
+      state.pendingFavorSelection = { actorId: playerId, targetPlayerId: target.id };
+      addInsight(state, playerId, "Favor", [], `Chờ ${target.name} chọn 1 lá để đưa cho bạn.`);
+      addInsight(state, target.id, "Favor", [], `${actor.name} dùng Favor. Chọn 1 lá trên tay để đưa.`);
+      state.log.push(`${actor.name} dùng Favor với ${target.name}; chờ ${target.name} chọn lá.`);
       nowWithTurn(state, now);
       break;
     }
@@ -1202,7 +1224,7 @@ export function playCard({ state, playerId, cardInstanceId, targetPlayerId, now 
       targetPlayerId,
       cardId: baseId,
       nopeCount: 0,
-      expiresAt: now + 5000,
+      expiresAt: now + 6000,
       action,
     };
   } else {
@@ -1225,13 +1247,14 @@ export function playNope(state: ServerGameState, playerId: PlayerId, cardInstanc
   const next = cloneState(state);
   assertPlaying(next);
   if (!next.pendingAction) throw new Error("No action is waiting for Nope");
+  if (next.pendingAction.sourcePlayerId === playerId) throw new Error("The player who used the action cannot Nope their own card");
   const player = getPlayer(next, playerId);
   const index = player.hand.indexOf(cardInstanceId);
   if (index < 0 || getCardBaseId(cardInstanceId) !== "nope") throw new Error("Player does not have this Nope");
   const [nope] = player.hand.splice(index, 1);
   next.discardPile.push(nope);
   next.pendingAction.nopeCount += 1;
-  next.pendingAction.expiresAt = now + 5000;
+  next.pendingAction.expiresAt = now + 6000;
   next.log.push(`${player.name} đánh Nope.`);
   nowWithTurn(next, now);
   next.updatedAt = now;
@@ -1371,6 +1394,25 @@ export function toClientGameState(state: ServerGameState, viewerId?: PlayerId): 
           type: "wait_pick" as const,
           stealerName,
           cardCount: target?.hand.length ?? 0,
+        };
+      }
+      return undefined;
+    })(),
+    pendingFavorSelection: (() => {
+      const p = state.pendingFavorSelection;
+      if (!p || !viewerId) return undefined;
+      const actor = state.players.find((pl) => pl.id === p.actorId);
+      const target = state.players.find((pl) => pl.id === p.targetPlayerId);
+      if (viewerId === p.targetPlayerId) {
+        return {
+          type: "choose" as const,
+          requesterName: actor?.name ?? p.actorId,
+        };
+      }
+      if (viewerId === p.actorId) {
+        return {
+          type: "wait_choose" as const,
+          targetName: target?.name ?? p.targetPlayerId,
         };
       }
       return undefined;

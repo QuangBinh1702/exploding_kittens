@@ -52,6 +52,7 @@ const baseGameActionSchema = z.object({
     "confirmShareFuture",
     "confirmDefuseExplosion",
     "confirmCatSteal",
+    "confirmFavorSelection",
     "shuffleMyHand",
     "leave",
     "heartbeat",
@@ -83,7 +84,7 @@ export const gameActionSchema = baseGameActionSchema.superRefine((body, ctx) => 
   if (["join", "start", "draw", "confirmShuffle", "shuffleMyHand", "leave", "heartbeat"].includes(body.action)) {
     requireField("playerId");
   }
-  if (["play", "nope"].includes(body.action)) {
+  if (["play", "nope", "confirmFavorSelection"].includes(body.action)) {
     requireField("playerId");
     requireField("cardInstanceId");
   }

@@ -326,22 +326,31 @@ export function LobbyForm() {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            {expansionOptions.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                title={option.hint}
-                onClick={() => toggleExpansion(option.id)}
-                className={`h-10 rounded-full border px-4 text-xs font-black uppercase tracking-[0.12em] transition ${
-                  expansions.includes(option.id)
-                    ? "border-felt bg-felt text-parchment shadow-inner"
-                    : "border-felt/20 bg-parchment text-ink hover:bg-cream"
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
+          <div className="rounded-3xl border border-felt/10 bg-white/55 p-4 shadow-sm">
+            <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="inline-flex rounded-full bg-amber-200 px-4 py-2 text-sm font-black uppercase tracking-[0.2em] text-felt shadow-[0_8px_20px_rgba(245,158,11,0.22)] ring-1 ring-amber-300/70">Chọn thể loại</p>
+                <p className="mt-2 text-sm font-semibold text-ink/65">Bật/tắt các bản mở rộng cho bộ bài trước khi tạo phòng.</p>
+              </div>
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-felt/60">{expansions.length} đang bật</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {expansionOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  title={option.hint}
+                  onClick={() => toggleExpansion(option.id)}
+                  className={`h-10 rounded-full border px-4 text-xs font-black uppercase tracking-[0.12em] transition ${
+                    expansions.includes(option.id)
+                      ? "border-felt bg-felt text-parchment shadow-inner"
+                      : "border-felt/20 bg-parchment text-ink hover:bg-cream"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
           </div>
           {error && <p className="rounded-2xl bg-red-950 px-4 py-3 text-sm font-bold text-white">{error}</p>}
         </div>

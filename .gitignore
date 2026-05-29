@@ -80,3 +80,4 @@ public/evidence/
 public/assets/logo_option_*.png
 
 .claude
+.agents/

@@ -202,7 +202,7 @@ function RoomPageContent() {
   const [targetPlayerId, setTargetPlayerId] = useState("");
   const [error, setError] = useState<string>();
   const [isBusy, setIsBusy] = useState(false);
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState(0);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [selectedCatCards, setSelectedCatCards] = useState<string[]>([]);
   const [alterOrder, setAlterOrder] = useState<string[]>([]);
@@ -243,6 +243,7 @@ function RoomPageContent() {
   }, [searchParams]);
 
   useEffect(() => {
+    setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
@@ -466,13 +467,16 @@ function RoomPageContent() {
   const mustDefuse = Boolean(state?.pendingDefuseExplosion);
   const mustPickCatSteal = state?.pendingCatSteal?.type === "pick";
   const waitCatStealVictim = state?.pendingCatSteal?.type === "wait_pick";
+  const mustChooseFavor = state?.pendingFavorSelection?.type === "choose";
+  const waitFavorTarget = state?.pendingFavorSelection?.type === "wait_choose";
   const blockTableActions =
     mustConfirmAlter ||
     mustConfirmShare ||
     mustBury ||
     mustShuffle ||
     mustDefuse ||
-    mustPickCatSteal;
+    mustPickCatSteal ||
+    mustChooseFavor;
 
   useEffect(() => {
     if (state?.pendingDefuseExplosion) {
@@ -486,10 +490,10 @@ function RoomPageContent() {
   }, [insightKey, state?.insight]);
 
   useEffect(() => {
-    if (!visibleInsight || mustConfirmAlter || mustConfirmShare || mustBury || mustShuffle || mustDefuse || mustPickCatSteal) return;
+    if (!visibleInsight || mustConfirmAlter || mustConfirmShare || mustBury || mustShuffle || mustDefuse || mustPickCatSteal || mustChooseFavor) return;
     if (insightSeconds > 0) return;
     setDismissedInsightKey(insightKey);
-  }, [insightKey, insightSeconds, mustBury, mustConfirmAlter, mustConfirmShare, mustDefuse, mustPickCatSteal, mustShuffle, visibleInsight]);
+  }, [insightKey, insightSeconds, mustBury, mustChooseFavor, mustConfirmAlter, mustConfirmShare, mustDefuse, mustPickCatSteal, mustShuffle, visibleInsight]);
 
   useEffect(() => {
     if (state?.insight?.reorderDrawTop?.length && state.pendingDrawAlter) {
@@ -572,6 +576,10 @@ function RoomPageContent() {
     runAction({ action: "confirmCatSteal", playerId, stolenCardInstanceId });
   }
 
+  function confirmFavorSelection(cardInstanceId: string) {
+    if (isBusy) return;
+    runAction({ action: "confirmFavorSelection", playerId, cardInstanceId });
+  }
   function moveAlterCard(from: number, to: number) {
     if (to < 0 || to >= alterOrder.length || from < 0 || from >= alterOrder.length || from === to) return;
     setAlterOrder((order) => {
@@ -637,6 +645,7 @@ function RoomPageContent() {
   }
 
   const nopeCard = me?.hand?.find((card) => baseCardId(card) === "nope");
+  const canUseNope = Boolean(nopeCard && state?.pendingAction && state.pendingAction.sourcePlayerId !== playerId);
   const isRoomOwner = (state?.ownerPlayerId ?? state?.players[0]?.id) === playerId;
   const booting = playerId !== "p-local" && !state && !error;
 
@@ -750,10 +759,14 @@ function RoomPageContent() {
                         ? isRoomOwner
                           ? "Chờ đủ người rồi bấm Bắt đầu (chỉ chủ phòng bấm được)"
                           : "Chờ chủ phòng bắt đầu ván"
-                        : waitCatStealVictim && state?.pendingCatSteal?.type === "wait_pick"
-                          ? `${state.pendingCatSteal.stealerName} đang chọn một lá từ tay bạn (combo 2 mèo).`
-                          : mustPickCatSteal && state?.pendingCatSteal?.type === "pick"
-                            ? `Chọn đúng 1 lá từ tay ${state.pendingCatSteal.targetName} — bấm vào lá bài ở khung dưới.`
+                        : waitFavorTarget && state?.pendingFavorSelection?.type === "wait_choose"
+                          ? `Đang chờ ${state.pendingFavorSelection.targetName} chọn 1 lá để đưa cho bạn.`
+                          : mustChooseFavor && state?.pendingFavorSelection?.type === "choose"
+                            ? `${state.pendingFavorSelection.requesterName} dùng Favor. Chọn 1 lá trên tay để đưa.`
+                            : waitCatStealVictim && state?.pendingCatSteal?.type === "wait_pick"
+                              ? `${state.pendingCatSteal.stealerName} đang chọn một lá từ tay bạn (combo 2 mèo).`
+                              : mustPickCatSteal && state?.pendingCatSteal?.type === "pick"
+                                ? `Chọn đúng 1 lá từ tay ${state.pendingCatSteal.targetName} — bấm vào lá bài ở khung dưới.`
                             : mustDefuse
                               ? "Rút trúng Mèo Nổ! Chọn vị trí chôn lại lá Mèo Nổ rồi xác nhận."
                               : mustBury
@@ -837,11 +850,13 @@ function RoomPageContent() {
         </header>
 
         <div className="relative z-0 grid min-h-0 grid-rows-[auto_1fr] gap-2">
-          {waitCatStealVictim && (
+          {(waitCatStealVictim || waitFavorTarget) && (
             <div className="rounded-lg border-2 border-amber-600 bg-amber-100 px-3 py-2 text-center text-xs font-black text-amber-950 shadow-sm">
               {state?.pendingCatSteal?.type === "wait_pick"
                 ? `${state.pendingCatSteal.stealerName} đang chọn một lá từ tay bạn (combo 2 mèo).`
-                : null}
+                : state?.pendingFavorSelection?.type === "wait_choose"
+                  ? `Đang chờ ${state.pendingFavorSelection.targetName} chọn 1 lá để đưa cho bạn.`
+                  : null}
             </div>
           )}
           <div className="flex gap-2 overflow-x-auto pb-1 sm:grid sm:grid-cols-2 sm:overflow-visible sm:pb-0">
@@ -1024,7 +1039,7 @@ function RoomPageContent() {
                         <p className="text-3xl font-black leading-none text-cherry">{nopeSeconds}s</p>
                       </div>
                       <motion.button
-                        disabled={!nopeCard || isBusy}
+                        disabled={!canUseNope || isBusy}
                         onClick={() => runAction({ action: "nope", playerId, cardInstanceId: nopeCard })}
                         whileTap={{ scale: 0.95 }}
                         className="h-12 rounded-xl bg-cherry px-5 text-sm font-black uppercase tracking-[0.14em] text-white shadow-lift disabled:opacity-40"
@@ -1032,9 +1047,11 @@ function RoomPageContent() {
                         🚫 Dùng Nope
                       </motion.button>
                     </div>
-                    {!nopeCard && (
+                    {!nopeCard ? (
                       <p className="text-[10px] font-bold text-stone-600">Bạn không có lá Nope trên tay.</p>
-                    )}
+                    ) : state?.pendingAction?.sourcePlayerId === playerId ? (
+                      <p className="text-[10px] font-bold text-stone-600">Bạn là người đánh lá này nên không thể tự Nope.</p>
+                    ) : null}
                   </div>
                 ) : visibleInsight ? (
                   <>
@@ -1078,6 +1095,7 @@ function RoomPageContent() {
           <AnimatePresence>
             {isPlaying &&
               ((mustDefuse && !defuseModalDismissed) ||
+                mustChooseFavor ||
                 mustPickCatSteal ||
                 mustBury ||
                 mustShuffle ||
@@ -1096,7 +1114,7 @@ function RoomPageContent() {
                   exit={{ opacity: 0, y: 24, scale: 0.97 }}
                   className="pointer-events-auto w-[min(94vw,760px)] max-h-[min(82vh,620px)] overflow-y-auto rounded-2xl border-4 border-felt/90 bg-parchment p-4 shadow-card"
                 >
-                {visibleInsight && !mustConfirmAlter && !mustConfirmShare && !mustBury && !mustShuffle && !mustDefuse && !mustPickCatSteal && (
+                {visibleInsight && !mustConfirmAlter && !mustConfirmShare && !mustBury && !mustShuffle && !mustDefuse && !mustPickCatSteal && !mustChooseFavor && (
                   <div className="mb-3 flex items-center justify-between gap-3 rounded-xl border-2 border-amber-300 bg-amber-50 px-3 py-2">
                     <p className="text-xs font-black uppercase tracking-[0.14em] text-amber-900">
                       Tự đóng sau {insightSeconds}s
@@ -1110,7 +1128,29 @@ function RoomPageContent() {
                     </button>
                   </div>
                 )}
-                {mustPickCatSteal && state?.pendingCatSteal?.type === "pick" ? (
+                {mustChooseFavor && state?.pendingFavorSelection?.type === "choose" ? (
+                  <>
+                    <p className="text-center text-xs font-black uppercase tracking-[0.16em] text-amber-900">Favor</p>
+                    <p className="mt-1 text-center text-sm font-bold text-stone-800">
+                      <span className="font-black">{state.pendingFavorSelection.requesterName}</span> yêu cầu bạn đưa 1 lá. Chọn lá bạn muốn đưa.
+                    </p>
+                    <div className="mt-3 flex flex-wrap justify-center gap-3">
+                      {me?.hand?.map((cardInstanceId, idx) => (
+                        <button
+                          key={`${cardInstanceId}-favor-${idx}`}
+                          type="button"
+                          disabled={isBusy}
+                          onClick={() => confirmFavorSelection(cardInstanceId)}
+                          className="rounded-lg border-2 border-amber-700 bg-white p-1 shadow transition hover:-translate-y-1 hover:ring-2 hover:ring-amber-500 disabled:opacity-50"
+                        >
+                          <div className="relative w-[88px] sm:w-24">
+                            <CardView cardId={baseCardId(cardInstanceId)} density="mini" className="shadow-none" />
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : mustPickCatSteal && state?.pendingCatSteal?.type === "pick" ? (
                   <>
                     <p className="text-center text-xs font-black uppercase tracking-[0.16em] text-amber-900">Combo 2 mèo</p>
                     <p className="mt-1 text-center text-sm font-bold text-stone-800">
@@ -1461,29 +1501,29 @@ function RoomPageContent() {
                     cardId !== "exploding-kitten" &&
                     cardId !== "imploding-kitten";
                   return (
-                    <motion.button
+                    <motion.div
                       key={`${cardInstanceId}-${index}`}
                       initial={false}
-                      disabled={isBusy || !canPlay}
-                      onClick={() => playCard(cardInstanceId)}
-                      className={`min-w-0 rounded-lg text-left disabled:cursor-not-allowed disabled:opacity-60 ${selectedCat ? "ring-4 ring-cherry" : ""}`}
-                      whileHover={canPlay ? { y: -4 } : undefined}
+                      className={`relative min-w-0 rounded-lg ${selectedCat ? "ring-4 ring-cherry" : ""}`}
+                      whileHover={canPlay && !isBusy ? { y: -4 } : undefined}
                     >
-                      <div className="relative">
+                      <button
+                        type="button"
+                        disabled={isBusy || !canPlay}
+                        onClick={() => playCard(cardInstanceId)}
+                        className="block w-full rounded-lg text-left disabled:cursor-not-allowed disabled:opacity-60"
+                      >
                         <CardView cardId={cardId} density="mini" className="shadow-sm" />
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setDetailCardId(cardId);
-                          }}
-                          className="absolute right-1 top-1 rounded-full border border-ink/20 bg-white/90 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-[0.08em] text-ink shadow focus:outline-none focus:ring-2 focus:ring-cherry-glow"
-                          aria-label={`Xem chi tiết lá bài ${getCardData(cardId)?.title ?? cardId}`}
-                        >
-                          Xem
-                        </button>
-                      </div>
-                    </motion.button>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDetailCardId(cardId)}
+                        className="absolute right-1 top-1 rounded-full border border-ink/20 bg-white/90 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-[0.08em] text-ink shadow focus:outline-none focus:ring-2 focus:ring-cherry-glow"
+                        aria-label={`Xem chi tiết lá bài ${getCardData(cardId)?.title ?? cardId}`}
+                      >
+                        Xem
+                      </button>
+                    </motion.div>
                   );
                 })}
               </div>
